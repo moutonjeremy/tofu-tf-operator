@@ -147,8 +147,8 @@ func TestPostgresErrorsHideTheURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = store.SavePlan(context.Background(), []byte("plan"))
-	if err == nil || strings.Contains(err.Error(), "s3cr3t") {
-		t.Fatalf("expected an error without the password, got %v", err)
+	if err == nil || strings.Contains(err.Error(), "s3cr3t") || !strings.Contains(err.Error(), "127.0.0.1") {
+		t.Fatalf("expected an error explaining the cause without the password, got %v", err)
 	}
 }
 

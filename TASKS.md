@@ -79,10 +79,11 @@
 
 - [x] Vérification des signatures GPG des binaires téléchargés (`tofudl`, `hc-install`), mirrors configurables
 - [x] Chart Helm (`dist/chart`, plugin kubebuilder `helm/v2-alpha`, `make helm-chart`)
-- [ ] Images multi-arch et release (goreleaser, publication des images manager/runner)
-- [ ] Cache de providers (PVC ou mirror)
-- [ ] Stockage des plans hors Secret (S3) pour les plans > 1 Mio
+- [x] Images multi-arch et release GitHub (ghcr.io, chart OCI, install.yaml, archives du plugin)
+- [ ] Cache de providers : reporté, voir `docs/later.md`
+- [x] Stockage des plans au choix : Secret, S3 (ou compatible) ou Postgres
 - [x] Approbation liée au digest (`spec.approvedPlan`) + plugin `kubectl tofu` (approve, reconcile, logs)
-- [ ] Providers de notification : Slack, Discord, Teams, GitHub ; signature HMAC
-- [ ] `dependsOn` entre Workspaces avec passage d'outputs
-- [ ] Source OCI, receiver de webhook git (push → reconcile immédiat)
+- [ ] Providers de notification : Slack, Discord, Teams, GitHub ; signature HMAC (reporté, voir `docs/later.md`)
+- [ ] `dependsOn` entre Workspaces avec passage d'outputs : reporté, voir `docs/later.md`
+- [x] Source OCI (tag suivi par digest, artefacts oras et flux, registries privés)
+- [x] Receivers : webhooks GitHub, GitLab et générique → vérification immédiate de la source

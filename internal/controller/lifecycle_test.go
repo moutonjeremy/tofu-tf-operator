@@ -438,6 +438,29 @@ var _ = Describe("Workspace lifecycle", func() {
 		Expect(getRun("stale-2").Spec.Trigger).To(Equal(infrav1alpha1.TriggerRetry))
 	})
 
+	It("explains why the runner pod does not start", func() {
+		createWorkspace("stuck", nil)
+		reconcileRun("stuck-1")
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "stuck-1-plan-pod", Namespace: namespace, Labels: map[string]string{jobNameLabel: "stuck-1-plan"}},
+			Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: runnerContainer, Image: "missing:latest"}}},
+		}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
+			Name:  runnerContainer,
+			Image: "missing:latest",
+			State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff", Message: "Back-off pulling image"}},
+		}}
+		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+		result, err := runReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key("stuck-1")})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(stuckPodPollInterval))
+		run := getRun("stuck-1")
+		Expect(run.Status.Phase).To(Equal(infrav1alpha1.PhasePlanning))
+		Expect(run.Status.Message).To(Equal("the runner pod stuck-1-plan-pod cannot start: ImagePullBackOff: Back-off pulling image"))
+	})
+
 	It("reports a timeout", func() {
 		createWorkspace("slow", nil)
 		reconcileRun("slow-1")

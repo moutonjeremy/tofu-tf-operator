@@ -190,7 +190,7 @@ func (r *RunReconciler) reconcileStep(ctx context.Context, run *infrav1alpha1.Ru
 	}
 	finished, failure := jobOutcome(job)
 	if !finished {
-		return ctrl.Result{}, nil
+		return r.reportStuckPod(ctx, run, ws, job)
 	}
 
 	result, err := r.stepResult(ctx, job, step, failure)
@@ -246,6 +246,46 @@ func (r *RunReconciler) reconcileStep(ctx context.Context, run *infrav1alpha1.Ru
 	run.Status.Message = "approve with: " + run.ApproveCommand()
 	notifications = append(notifications, infrav1alpha1.EventApprovalRequired)
 	return r.updateStatus(ctx, run, ws, notifications)
+}
+
+// stuckPodReasons are the waiting reasons of a pod that cannot start without a fix.
+var stuckPodReasons = map[string]bool{
+	"ErrImagePull":               true,
+	"ImagePullBackOff":           true,
+	"InvalidImageName":           true,
+	"CreateContainerConfigError": true,
+	"CreateContainerError":       true,
+}
+
+// stuckPodPollInterval is how often a running step is checked for a pod that cannot start.
+const stuckPodPollInterval = 30 * time.Second
+
+// reportStuckPod explains in the status why the pod of a running step does not start
+// (missing image or Secret...), which would otherwise only show at the step timeout.
+func (r *RunReconciler) reportStuckPod(ctx context.Context, run *infrav1alpha1.Run, ws *infrav1alpha1.Workspace,
+	job *batchv1.Job) (ctrl.Result, error) {
+	pods := &corev1.PodList{}
+	if err := r.List(ctx, pods, client.InNamespace(job.Namespace), client.MatchingLabels{jobNameLabel: job.Name}); err != nil {
+		return ctrl.Result{}, err
+	}
+	message := ""
+	for _, pod := range pods.Items {
+		for _, status := range pod.Status.ContainerStatuses {
+			if waiting := status.State.Waiting; waiting != nil && stuckPodReasons[waiting.Reason] {
+				message = fmt.Sprintf("the runner pod %s cannot start: %s: %s", pod.Name, waiting.Reason, waiting.Message)
+			}
+		}
+	}
+	if message != run.Status.Message {
+		run.Status.Message = message
+		if message != "" {
+			r.event(run, ws, corev1.EventTypeWarning, "PodNotStarting", "Wait", "%s", message)
+		}
+		if result, err := r.updateStatus(ctx, run, ws, nil); err != nil || result.RequeueAfter > 0 {
+			return result, err
+		}
+	}
+	return ctrl.Result{RequeueAfter: stuckPodPollInterval}, nil
 }
 
 // stepResult reads the result written by the runner in the termination message

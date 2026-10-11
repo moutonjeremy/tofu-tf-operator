@@ -23,6 +23,9 @@
 12. [Observabilité](#12-observabilité)
 13. [Limites connues](#13-limites-connues)
 14. [Développement local](#14-développement-local)
+15. [Stockage des plans](#15-stockage-des-plans)
+16. [Receivers (webhooks)](#16-receivers-webhooks)
+17. [Distribution et releases](#17-distribution-et-releases)
 
 ---
 
@@ -66,16 +69,21 @@ policy-as-code. Voir `TASKS.md`.
 Arborescence :
 
 ```
-api/v1alpha1/          types Workspace, Run, NotificationProvider
-cmd/main.go            manager (controllers)
+api/v1alpha1/          types Workspace, Run, NotificationProvider, Receiver
+cmd/main.go            manager (controllers, serveur des webhooks)
 cmd/runner/            binaire exécuté dans les Jobs
+cmd/kubectl-tofu/      plugin kubectl (approve, reconcile, logs)
 internal/controller/   reconcilers
-internal/source/       résolution de révision + fetch (git, configmap, inline)
-internal/engine/       installation des binaires tofu/terraform + vérification checksum
-internal/runner/       exécution init/plan/apply, parsing du plan JSON
+internal/source/       révisions et récupération des sources (git, OCI, configmap, inline)
+internal/engine/       installation des binaires tofu/terraform (checksum + signature)
+internal/runner/       exécution init/plan/apply, plan JSON, stockage des plans
 internal/notify/       envoi des événements (webhook)
+internal/receiver/     serveur des webhooks des Receivers
+internal/metrics/      métriques Prometheus
+internal/cli/          commandes du plugin kubectl
 config/                kustomize (CRDs, RBAC, manager)
-test/e2e/              tests sur kind, providers random/null/local uniquement
+dist/                  install.yaml et chart Helm générés
+test/e2e/              tests sur kind, sans provider à télécharger
 ```
 
 ## 3. Ressources (CRDs)
@@ -175,6 +183,22 @@ kubectl -n infra patch run vpc-prod-12 --type merge -p '{"spec":{"approvedPlan":
 Le plugin `kubectl tofu` (`cmd/kubectl-tofu`, `make build-plugin`) propose aussi
 `reconcile WORKSPACE`, qui demande un nouveau Run, et `logs RUN|WORKSPACE [--step plan|apply] [-f]`.
 
+### Receiver
+
+Un endpoint de webhook qui fait vérifier la source des Workspaces sélectionnés (§16).
+
+```yaml
+apiVersion: infra.labbs.fr/v1alpha1
+kind: Receiver
+metadata: { name: infra-repo, namespace: infra }
+spec:
+  type: github                 # github | gitlab | generic
+  secretRef: { name: receiver-token }
+  workspaceSelector: { matchLabels: { app.kubernetes.io/part-of: infra } }
+status:
+  webhookPath: /hook/5f1d...   # sha256(token + nom + namespace)
+```
+
 ### NotificationProvider
 
 Un endpoint de notification. Seul `webhook` est supporté pour l'instant.
@@ -233,8 +257,14 @@ Opération `Destroy` : même cycle avec `plan -destroy`.
 3. **Résolution de la révision** de la source :
    - git : `ls-remote` via go-git, révision `<ref>@sha1:<sha>`, polling tous les
      `git.interval` ;
+   - oci : digest du tag (requête HEAD, sans téléchargement), révision
+     `<tag>@sha256:<digest>`, polling tous les `oci.interval` ; un digest épinglé est
+     sa propre révision ;
    - configMap : `sha256:<hash du contenu>` (watch sur les ConfigMaps référencées) ;
    - inline : `sha256:<hash du contenu>`.
+
+   L'annotation `infra.labbs.fr/refresh-requested-at`, posée par les Receivers, déclenche
+   cette résolution immédiatement, sans forcer de Run.
 4. **Décision** : un nouveau Run est créé si aucun Run n'est actif et que l'une de ces
    conditions est vraie :
    - `generation` ≠ génération du dernier Run → `SpecChange` ;
@@ -277,6 +307,10 @@ Opération `Destroy` : même cycle avec `plan -destroy`.
   `<run>-apply`, idempotent).
 - À la fin d'un Job, il lit le **termination message** du pod (JSON ≤ 4 Ko) : résumé du
   plan, digest, erreur éventuelle. Le runner n'a donc pas besoin de droits sur les Runs.
+- Pendant qu'une étape tourne, il vérifie le pod toutes les 30 secondes. Si le pod ne
+  peut pas démarrer (`ImagePullBackOff`, `CreateContainerConfigError`, etc.), la cause
+  apparaît dans `status.message` et dans un Event `PodNotStarting`, au lieu d'attendre le
+  timeout de l'étape.
 - Il relit le Workspace à la création de chaque Job (env, vars, runner) et passe le Run en
   `Superseded` si `workspace.generation` ≠ `spec.workspaceGeneration`.
 - Il émet un Event Kubernetes et envoie les notifications à chaque transition. Les
@@ -294,9 +328,14 @@ Un binaire Go (`cmd/runner`) dans une image dédiée, qui contient aussi `tofu`,
 `openssh-client` (les modules `git::` en ont besoin). Ce n'est pas une image distroless.
 
 Étape **plan** :
-1. Récupère la source à la révision exacte : clone git au SHA, ConfigMap montée, ou
-   contenu inline passé par le controller. Pour une ConfigMap, il vérifie que le hash
-   correspond à la révision du Run, sinon il échoue avec « stale source ».
+1. Récupère la source à la révision exacte :
+   - git : clone au SHA ;
+   - OCI : téléchargement par digest ;
+   - ConfigMap : montée en volume ;
+   - inline : contenu passé par le controller.
+
+   La révision réellement utilisée est rapportée dans le résultat. Pour une ConfigMap
+   modifiée entre-temps, l'apply affiche un avertissement et applique le plan revu.
 2. Installe le binaire si `engine.version` diffère de la version embarquée :
    `opentofu/tofudl` pour tofu, `hashicorp/hc-install` pour terraform. Le checksum de
    l'archive et la signature GPG du fichier de checksums sont vérifiés avec les clés
@@ -309,11 +348,11 @@ Un binaire Go (`cmd/runner`) dans une image dédiée, qui contient aussi `tofu`,
 5. Lance `plan -input=false -out=tfplan -detailed-exitcode [-destroy] -var ...`.
 6. Lance `show -json tfplan` et compte add/change/destroy/import ; un replace compte
    dans add et dans destroy, comme le CLI.
-7. Stocke le planfile gzip dans le Secret `<run>-plan` (owner : le Run) et écrit le
-   résumé dans le termination message.
+7. Stocke le planfile gzip (§15) et écrit le résumé dans le termination message.
 
 Étape **apply** : il refait les étapes 1 à 4, récupère le planfile, vérifie son digest,
-lance `apply -input=false tfplan`, puis `output -json` vers le Secret d'outputs.
+lance `apply -input=false tfplan`, supprime le plan stocké (réussite ou échec), puis
+`output -json` vers le Secret d'outputs.
 
 Environnement : `TF_IN_AUTOMATION=1`, `-no-color`, logs sur stdout.
 
@@ -427,6 +466,12 @@ HMAC du payload, templates.
   logs de l'operator.
 - Approbation : le droit `patch` sur `runs` équivaut au droit d'appliquer. On peut le
   restreindre par RBAC.
+- Receivers : le port des webhooks est le seul point d'entrée exposé hors du cluster.
+  Un appel sans le bon chemin ou le bon token ne fait rien, et un appel valide ne fait
+  que relancer une résolution de source : il ne peut ni approuver ni appliquer.
+- Artefacts OCI : l'extraction refuse les chemins qui sortent du répertoire de
+  l'artefact et les liens, et limite la taille à 256 Mio.
+- Stockage des plans : voir §15.
 - Webhooks : l'operator envoie des requêtes HTTP vers les adresses des
   NotificationProviders, depuis son propre réseau. Créer un NotificationProvider permet
   donc de faire appeler une URL interne par l'operator (payload fixe). Ce droit est à
@@ -456,13 +501,13 @@ HMAC du payload, templates.
 
 ## 13. Limites connues
 
-- **Taille des Secrets (1 Mio)** : elle limite le state du backend Kubernetes et le
-  planfile (qui embarque un snapshot du state). Pour les gros states, utiliser un backend
-  S3/GCS ; le stockage des plans en objet sera une évolution.
-- **Coût du double init** : chaque Run avec changements fait deux `init`. Un cache de
-  providers (PVC ou mirror) viendra plus tard.
+- **Taille des Secrets (1 Mio)** : elle limite le state du backend Kubernetes et, par
+  défaut, le planfile (qui embarque un snapshot du state). Pour les gros states :
+  backend S3/GCS et `planStorage` S3 ou Postgres (§15).
+- **Coût du double init** : chaque Run avec changements fait deux `init`. Le cache de
+  providers est un sujet reporté ([later.md](later.md)).
 - **Exécutions concurrentes** : un seul Run actif par Workspace. Les Workspaces sont
-  indépendants entre eux (pas de `dependsOn` pour l'instant).
+  indépendants entre eux ; `dependsOn` est un sujet reporté ([later.md](later.md)).
 
 ## 14. Développement local
 
@@ -477,3 +522,75 @@ HMAC du payload, templates.
   - `make lint` : golangci-lint ;
   - `make test-e2e` : cluster kind dédié.
 - **Après modification des `*_types.go`** : `make manifests generate`.
+
+## 15. Stockage des plans
+
+Le planfile doit survivre entre le Job de plan et celui d'apply. `spec.planStorage`
+choisit où :
+
+| Type | Où | Limite | Credentials |
+|---|---|---|---|
+| `Secret` (défaut) | Secret `<run>-plan`, owner : le Run | 1 Mio compressé | aucun |
+| `S3` | `s3://<bucket>/<prefix><ns>/<workspace>/<run>-<uid>.tfplan.gz` | aucune | Secret (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`) ou chaîne AWS (env, IRSA, pod identity) |
+| `Postgres` | table `tofu_plans` (créée si besoin), clé : UID du Run | aucune | Secret (clé `url`) |
+
+- S3 fonctionne avec les services compatibles (MinIO, R2, Ceph...) via `endpoint` et
+  `pathStyle`. Le client est `minio-go`, le Postgres est `pgx`.
+- Le Secret de credentials est monté en volume dans le runner
+  (`/etc/tofu-runner/plan-storage`), jamais exposé à tofu par l'environnement. Le
+  controller vérifie qu'il existe avant de créer un Run.
+- Un plan contient un snapshot du state et les valeurs des variables : le bucket ou la
+  base doivent être protégés comme le state (chiffrement, accès restreint). Le digest
+  sha256 du plan, enregistré dans le status du Run, détecte toute modification entre
+  le plan et l'apply.
+- Nettoyage : le plan est supprimé après l'apply. Les plans jamais appliqués (Runs
+  `Superseded`, `Failed` au plan, en attente abandonnée) restent : Postgres les supprime
+  après 30 jours, à chaque nouveau plan ; pour S3, il faut une règle de cycle de vie du
+  bucket. Un nettoyage actif par l'operator est dans [later.md](later.md).
+
+## 16. Receivers (webhooks)
+
+Le manager sert les webhooks sur le port 9292 (`--receiver-bind-address`, `0` pour
+désactiver), exposé par le Service `<release>-controller-manager-receiver`. Ce Service
+est à exposer par un Ingress ou une Gateway. Le serveur tourne sur toutes les réplicas,
+sans élection de leader.
+
+1. Le Receiver controller lit le token du Secret et publie
+   `status.webhookPath = /hook/<sha256(token + nom + namespace)>`. Le chemin ne se
+   devine pas et change avec le token.
+2. Le serveur retrouve le Receiver par son chemin (index sur `status.webhookPath`),
+   relit le token et authentifie l'appel :
+   - `github` : HMAC `X-Hub-Signature-256` du corps ; seul l'événement `push`
+     déclenche (`ping` répond 200 sans effet) ;
+   - `gitlab` : `X-Gitlab-Token` ; événements `Push Hook` et `Tag Push Hook` ;
+   - `generic` : `Authorization: Bearer <token>`, pour une CI (après un `oras push`
+     par exemple).
+3. Il pose `infra.labbs.fr/refresh-requested-at` sur les Workspaces du namespace qui
+   correspondent à `workspaceSelector` (tous si absent). Chaque Workspace résout alors
+   sa source et ne crée un Run que si la révision a changé.
+
+Les comparaisons de tokens sont en temps constant, le corps est limité à 1 Mio, et les
+erreurs internes ne sont pas détaillées dans les réponses.
+
+La NetworkPolicy optionnelle du chart (`networkPolicy.enabled`) n'autorise que le port
+des métriques : avec elle, il faut une NetworkPolicy autorisant le port 9292 depuis
+l'ingress controller.
+
+## 17. Distribution et releases
+
+- **Images** : `ghcr.io/labbs/tofu-tf-operator` et `ghcr.io/labbs/tofu-runner`,
+  multi-arch (amd64, arm64). Les Dockerfiles compilent sur la plateforme de build
+  (`--platform=$BUILDPLATFORM`) ; seule l'installation des paquets alpine du runner
+  passe par l'émulation.
+- **Couplage manager/runner** : le manager est construit avec l'image du runner de la
+  même version comme valeur par défaut (`-ldflags -X main.defaultRunnerImage`).
+  `RUNNER_IMAGE` ou `spec.runner.image` la remplacent.
+- **Release** : un tag `v*` déclenche [release.yml](../.github/workflows/release.yml).
+  Il pousse les images et le chart (`oci://ghcr.io/labbs/charts/tofu-tf-operator`) et
+  crée la release GitHub avec `install.yaml`, les archives de `kubectl-tofu`
+  (linux, darwin, windows) et `checksums.txt`. Les actions sont épinglées par SHA.
+- **Chart** : généré par le plugin kubebuilder `helm/v2-alpha` (`make helm-chart`).
+  Les templates sont regénérés depuis kustomize ; `values.yaml` et `Chart.yaml` sont
+  préservés. Les variables d'environnement du manager se surchargent via
+  `manager.envOverrides` : la même variable dans `manager.env` serait dupliquée, ce
+  que l'apply côté serveur de Helm 4 refuse.

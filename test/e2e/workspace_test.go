@@ -40,6 +40,9 @@ import (
 // Pod Security Standard, which the runner pods must satisfy.
 const workloadNamespace = "e2e-workloads"
 
+// infraNamespace holds the services used by the tests (database, HTTP client).
+const infraNamespace = "e2e-infra"
+
 func kubectl(args ...string) (string, error) {
 	return utils.Run(exec.Command("kubectl", args...))
 }
@@ -88,7 +91,9 @@ func stateResources(workspace string) (int, error) {
 func workspaceSpecs() {
 	Context("Workspace", func() {
 		BeforeAll(func() {
-			_, err := kubectl("create", "ns", workloadNamespace)
+			_, err := kubectl("create", "ns", infraNamespace)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = kubectl("create", "ns", workloadNamespace)
 			Expect(err).NotTo(HaveOccurred())
 			_, err = kubectl("label", "--overwrite", "ns", workloadNamespace, "pod-security.kubernetes.io/enforce=restricted")
 			Expect(err).NotTo(HaveOccurred())
@@ -98,6 +103,7 @@ func workspaceSpecs() {
 			// Release the Workspaces while the operator still runs, so the namespace can be deleted.
 			_, _ = kubectl("-n", workloadNamespace, "delete", "workspaces", "--all", "--timeout=3m")
 			_, _ = kubectl("delete", "ns", workloadNamespace, "--wait=false")
+			_, _ = kubectl("delete", "ns", infraNamespace, "--wait=false")
 		})
 
 		AfterEach(func() {
@@ -176,6 +182,109 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 			Expect(out).To(ContainSubstring("run manual-1 approved"))
 			Eventually(jsonPath("run", "manual-1", "{.status.phase}"), 3*time.Minute).Should(Equal("Applied"))
+		})
+
+		It("keeps the plan in Postgres until it is applied", func() {
+			By("deploying PostgreSQL")
+			cmd := exec.Command("kubectl", "-n", infraNamespace, "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(`
+apiVersion: v1
+kind: Pod
+metadata:
+  name: postgres
+  labels: {app: postgres}
+spec:
+  containers:
+  - name: postgres
+    image: postgres:17-alpine
+    env: [{name: POSTGRES_PASSWORD, value: test}]
+    readinessProbe:
+      # Over TCP: during its initialization, the server only listens on its Unix socket.
+      exec: {command: [pg_isready, -h, 127.0.0.1, -U, postgres]}
+      periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector: {app: postgres}
+  ports: [{port: 5432}]
+`)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = kubectl("-n", infraNamespace, "wait", "pod/postgres", "--for=condition=Ready", "--timeout=3m")
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = kubectl("-n", workloadNamespace, "create", "secret", "generic", "plans-db",
+				"--from-literal=url=postgres://postgres:test@postgres."+infraNamespace+".svc:5432/postgres?sslmode=disable")
+			Expect(err).NotTo(HaveOccurred())
+			kubectlApply(`
+apiVersion: infra.labbs.fr/v1alpha1
+kind: Workspace
+metadata:
+  name: pg
+spec:
+  approvalMode: Manual
+  planStorage:
+    type: Postgres
+    postgres:
+      secretRef: {name: plans-db}
+  source:
+    inline: |
+      resource "terraform_data" "this" {
+        input = "postgres"
+      }
+`)
+			Eventually(jsonPath("run", "pg-1", "{.status.phase}"), 3*time.Minute).Should(Equal("AwaitingApproval"))
+			storedPlans := func() (string, error) {
+				out, err := kubectl("-n", infraNamespace, "exec", "postgres", "--",
+					"psql", "-U", "postgres", "-tAc", "SELECT count(*) FROM tofu_plans WHERE run = 'pg-1'")
+				return strings.TrimSpace(out), err
+			}
+			Expect(storedPlans()).To(Equal("1"))
+			_, err = kubectl("-n", workloadNamespace, "get", "secret", "pg-1-plan")
+			Expect(err).To(HaveOccurred(), "the plan must not be stored in a Secret")
+
+			_, err = utils.Run(exec.Command("bin/kubectl-tofu", "-n", workloadNamespace, "approve", "pg", "--yes"))
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(jsonPath("run", "pg-1", "{.status.phase}"), 3*time.Minute).Should(Equal("Applied"))
+			Expect(storedPlans()).To(Equal("0"), "the plan must be deleted once applied")
+		})
+
+		It("checks the source when a Receiver is called", func() {
+			_, err := kubectl("-n", workloadNamespace, "create", "secret", "generic", "hook-token", "--from-literal=token=e2e-token")
+			Expect(err).NotTo(HaveOccurred())
+			kubectlApply(`
+apiVersion: infra.labbs.fr/v1alpha1
+kind: Receiver
+metadata:
+  name: ci
+spec:
+  type: generic
+  secretRef: {name: hook-token}
+  workspaceSelector:
+    matchLabels: {e2e/receiver: "yes"}
+`)
+			_, err = kubectl("-n", workloadNamespace, "label", "workspace", "manual", "e2e/receiver=yes")
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(jsonPath("receiver", "ci", "{.status.webhookPath}")).Should(HavePrefix("/hook/"))
+			path, err := jsonPath("receiver", "ci", "{.status.webhookPath}")()
+			Expect(err).NotTo(HaveOccurred())
+
+			By("calling the webhook from a pod, through the Service")
+			url := "http://tofu-tf-operator-controller-manager-receiver." + namespace + ".svc" + path
+			_, err = kubectl("-n", infraNamespace, "run", "call-receiver", "--image=curlimages/curl", "--restart=Never",
+				"--", "curl", "-sS", "--fail-with-body", "-X", "POST", "-H", "Authorization: Bearer e2e-token", url)
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(func() (string, error) {
+				return kubectl("-n", infraNamespace, "get", "pod", "call-receiver", "-o", "jsonpath={.status.phase}")
+			}, 2*time.Minute).Should(Equal("Succeeded"))
+			logs, err := kubectl("-n", infraNamespace, "logs", "call-receiver")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(logs).To(ContainSubstring(`"workspaces":["manual"]`))
+			Expect(jsonPath("workspace", "manual", `{.metadata.annotations.infra\.labbs\.fr/refresh-requested-at}`)()).
+				NotTo(BeEmpty())
 		})
 
 		It("reports the error of an invalid configuration", func() {

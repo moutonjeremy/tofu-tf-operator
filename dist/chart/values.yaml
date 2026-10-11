@@ -208,6 +208,8 @@ prometheus:
 
 ## Network policies for controlling traffic flow.
 ## Enable to restrict ingress to the controller manager.
+## It only allows the metrics port: to receive webhooks, add a NetworkPolicy allowing the
+## receiver port (9292) from your ingress controller.
 ##
 networkPolicy:
   enabled: false

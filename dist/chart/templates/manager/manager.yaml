@@ -118,6 +118,9 @@ spec:
         - containerPort: {{ .Values.manager.healthProbe.port }}
           name: health
           protocol: TCP
+        - containerPort: 9292
+          name: receiver
+          protocol: TCP
         readinessProbe:
           httpGet:
             path: /readyz

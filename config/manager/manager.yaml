@@ -65,6 +65,10 @@ spec:
           - --health-probe-bind-address=:8081
         image: controller:latest
         name: manager
+        env:
+        # Image of the runner Jobs; empty uses the runner of the same release as the manager.
+        - name: RUNNER_IMAGE
+          value: ""
         ports:
         - containerPort: 8081
           name: health

@@ -61,8 +61,7 @@ func NewPostgresPlanStore(_ context.Context, cfg Config) (*PostgresPlanStore, er
 func (s *PostgresPlanStore) connect(ctx context.Context) (*pgx.Conn, string, error) {
 	conn, err := pgx.Connect(ctx, s.URL)
 	if err != nil {
-		// The error may contain the URL and its password: keep it out of the logs.
-		return nil, "", errors.New("connecting to the Postgres plan storage failed")
+		return nil, "", fmt.Errorf("connecting to the Postgres plan storage: %s", s.redact(err))
 	}
 	table := pgx.Identifier{s.Table}.Sanitize()
 	_, err = conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS `+table+` (
@@ -82,6 +81,18 @@ func (s *PostgresPlanStore) connect(ctx context.Context) (*pgx.Conn, string, err
 		return nil, "", fmt.Errorf("creating the table %s: %w", s.Table, err)
 	}
 	return conn, table, nil
+}
+
+// redact removes the password of the connection URL from an error message.
+func (s *PostgresPlanStore) redact(err error) string {
+	message := err.Error()
+	if config, parseErr := pgx.ParseConfig(s.URL); parseErr == nil && config.Password != "" {
+		message = strings.ReplaceAll(message, config.Password, "xxxxx")
+	} else if parseErr != nil {
+		// An unparsable URL may be echoed in the error: say nothing more.
+		return "invalid connection URL"
+	}
+	return message
 }
 
 // SavePlan inserts the gzipped plan and removes the old plans that were never applied.
