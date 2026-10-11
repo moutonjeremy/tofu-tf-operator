@@ -36,12 +36,16 @@ import (
 // terminationLog is where the kubelet reads the termination message.
 const terminationLog = "/dev/termination-log"
 
+// version is set at build time with -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	if len(os.Args) != 2 || (os.Args[1] != string(runner.StepPlan) && os.Args[1] != string(runner.StepApply)) {
 		_, _ = fmt.Fprintf(os.Stderr, "usage: %s plan|apply\n", filepath.Base(os.Args[0]))
 		os.Exit(2)
 	}
 	step := runner.Step(os.Args[1])
+	_, _ = fmt.Printf("tofu-runner %s: %s step\n", version, step)
 
 	// SIGTERM is sent when the Job times out or is deleted: interrupt the engine
 	// so that it persists the state and releases the lock.

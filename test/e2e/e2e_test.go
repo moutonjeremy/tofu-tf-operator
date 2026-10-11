@@ -72,12 +72,6 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
-
-		By("setting the runner image")
-		cmd = exec.Command("kubectl", "-n", namespace, "set", "env", "deployment/tofu-tf-operator-controller-manager",
-			"RUNNER_IMAGE="+runnerImage)
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to set the runner image")
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,

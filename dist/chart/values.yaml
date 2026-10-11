@@ -16,7 +16,7 @@ manager:
   replicas: 1
 
   image:
-    repository: controller
+    repository: ghcr.io/labbs/tofu-tf-operator
     ## Image tag (defaults to Chart.appVersion if not set)
     ##
     # tag: ""
@@ -42,9 +42,10 @@ manager:
   ## Variables set here must not also be in env above: Helm applies the Deployment
   ## server-side, which rejects duplicate environment variables.
   ##
-  envOverrides:
-    ## Default image of the runner Jobs; a Workspace can override it in spec.runner.image.
-    RUNNER_IMAGE: tofu-runner:latest
+  ## The manager runs by default the runner image of its own release; RUNNER_IMAGE
+  ## overrides it, and a Workspace can override it in spec.runner.image.
+  envOverrides: {}
+  #  RUNNER_IMAGE: ghcr.io/labbs/tofu-runner:<version>
 
   ## Image pull secrets
   ##

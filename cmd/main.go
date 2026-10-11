@@ -52,6 +52,13 @@ var (
 	setupLog = ctrl.Log.WithName("setup")
 )
 
+// Set at build time with -ldflags "-X main.version=... -X main.defaultRunnerImage=...".
+var (
+	version = "dev"
+	// defaultRunnerImage is the runner of the same release as the manager.
+	defaultRunnerImage = "tofu-runner:latest"
+)
+
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
@@ -90,7 +97,7 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	flag.StringVar(&runnerImage, "runner-image", envOrDefault("RUNNER_IMAGE", "tofu-runner:latest"),
+	flag.StringVar(&runnerImage, "runner-image", envOrDefault("RUNNER_IMAGE", defaultRunnerImage),
 		"The default image of the runner Jobs. Defaults to the RUNNER_IMAGE environment variable.")
 	opts := zap.Options{
 		Development: true,
@@ -242,7 +249,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("Starting manager")
+	setupLog.Info("Starting manager", "version", version, "runnerImage", runnerImage)
 	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)

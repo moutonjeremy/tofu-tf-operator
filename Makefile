@@ -2,6 +2,8 @@
 IMG ?= controller:latest
 # Image URL of the runner executing the plan and apply Jobs
 RUNNER_IMG ?= tofu-runner:latest
+# Version reported by the binaries (without the leading v)
+VERSION ?= dev
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 
@@ -110,6 +112,26 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
 
+## Release assets
+RELEASE_DIR ?= dist/release
+PLUGIN_PLATFORMS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
+
+.PHONY: release-artifacts
+release-artifacts: build-installer ## Build the release assets in RELEASE_DIR (install.yaml, Helm chart, kubectl-tofu archives, checksums). Set VERSION and IMG.
+	rm -rf "$(RELEASE_DIR)" && mkdir -p "$(RELEASE_DIR)"
+	cp dist/install.yaml "$(RELEASE_DIR)/install.yaml"
+	"$(HELM)" package dist/chart --version $(VERSION) --app-version $(VERSION) --destination "$(RELEASE_DIR)"
+	@set -e; for platform in $(PLUGIN_PLATFORMS); do \
+		os=$${platform%/*}; arch=$${platform#*/}; ext=""; [ "$$os" = windows ] && ext=.exe; \
+		dir=$$(mktemp -d); \
+		echo "Building kubectl-tofu for $$os/$$arch"; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" \
+			-o "$$dir/kubectl-tofu$$ext" ./cmd/kubectl-tofu; \
+		tar -czf "$(RELEASE_DIR)/kubectl-tofu_$(VERSION)_$${os}_$${arch}.tar.gz" -C "$$dir" "kubectl-tofu$$ext"; \
+		rm -rf "$$dir"; \
+	done
+	cd "$(RELEASE_DIR)" && shasum -a 256 * > checksums.txt
+
 .PHONY: build-plugin
 build-plugin: fmt vet ## Build the kubectl-tofu plugin (copy bin/kubectl-tofu in your PATH to use `kubectl tofu`).
 	go build -o bin/kubectl-tofu ./cmd/kubectl-tofu
@@ -124,8 +146,9 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # Override BASE_IMAGE to build from another registry, e.g.
 # make docker-build IMG=<img> BASE_IMAGE=docker.io/library/golang:1.26
 .PHONY: docker-build
-docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build $(if $(BASE_IMAGE),--build-arg BASE_IMAGE=$(BASE_IMAGE)) -t ${IMG} .
+docker-build: ## Build docker image with the manager; its default runner image is RUNNER_IMG.
+	$(CONTAINER_TOOL) build $(if $(BASE_IMAGE),--build-arg BASE_IMAGE=$(BASE_IMAGE)) \
+		--build-arg VERSION=$(VERSION) --build-arg RUNNER_IMAGE=$(RUNNER_IMG) -t ${IMG} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
@@ -133,7 +156,7 @@ docker-push: ## Push docker image with the manager.
 
 .PHONY: docker-build-runner
 docker-build-runner: ## Build docker image with the runner.
-	$(CONTAINER_TOOL) build -f Dockerfile.runner -t ${RUNNER_IMG} .
+	$(CONTAINER_TOOL) build -f Dockerfile.runner --build-arg VERSION=$(VERSION) -t ${RUNNER_IMG} .
 
 .PHONY: docker-push-runner
 docker-push-runner: ## Push docker image with the runner.
@@ -147,14 +170,14 @@ docker-push-runner: ## Push docker image with the runner.
 # To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
 PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
 .PHONY: docker-buildx
-docker-buildx: ## Build and push docker image for the manager for cross-platform support
-	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
+docker-buildx: ## Build and push docker images of the manager and the runner for cross-platform support
 	- $(CONTAINER_TOOL) buildx create --name tofu-tf-operator-builder
 	$(CONTAINER_TOOL) buildx use tofu-tf-operator-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) $(if $(BASE_IMAGE),--build-arg BASE_IMAGE=$(BASE_IMAGE)) --tag ${IMG} -f Dockerfile.cross .
+	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) $(if $(BASE_IMAGE),--build-arg BASE_IMAGE=$(BASE_IMAGE)) \
+		--build-arg VERSION=$(VERSION) --build-arg RUNNER_IMAGE=$(RUNNER_IMG) --tag ${IMG} -f Dockerfile .
+	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --build-arg VERSION=$(VERSION) \
+		--tag ${RUNNER_IMG} -f Dockerfile.runner .
 	- $(CONTAINER_TOOL) buildx rm tofu-tf-operator-builder
-	rm Dockerfile.cross
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.

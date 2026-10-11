@@ -65,10 +65,6 @@ spec:
           - --health-probe-bind-address=:8081
         image: controller:latest
         name: manager
-        env:
-        # Default image of the runner Jobs; a Workspace can override it in spec.runner.image.
-        - name: RUNNER_IMAGE
-          value: tofu-runner:latest
         ports:
         - containerPort: 8081
           name: health

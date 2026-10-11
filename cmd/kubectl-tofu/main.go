@@ -38,6 +38,9 @@ import (
 	"github.com/labbs/tofu-tf-operator/internal/cli"
 )
 
+// version is set at build time with -ldflags "-X main.version=...".
+var version = "dev"
+
 // options are the connection flags shared by the commands, as in kubectl.
 type options struct {
 	kubeconfig string
@@ -87,6 +90,7 @@ func main() {
 		Short:         "Approve plans, request runs and read the logs of tofu-tf-operator Workspaces",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Version:       version,
 	}
 	root.PersistentFlags().StringVar(&opts.kubeconfig, "kubeconfig", "", "path to the kubeconfig file")
 	root.PersistentFlags().StringVar(&opts.context, "context", "", "name of the kubeconfig context to use")
