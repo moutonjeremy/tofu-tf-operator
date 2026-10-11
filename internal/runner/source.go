@@ -62,6 +62,9 @@ func (r *Runner) fetchSource(ctx context.Context) (string, string, error) {
 
 	case SourceGit:
 		return r.fetchGit(ctx)
+
+	case SourceOCI:
+		return r.fetchOCI(ctx)
 	}
 	return "", "", fmt.Errorf("unknown source kind %q", r.Config.SourceKind)
 }
@@ -128,6 +131,33 @@ func (r *Runner) fetchGit(ctx context.Context) (string, string, error) {
 	dir := filepath.Join(repo, filepath.FromSlash(r.Config.GitPath))
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return "", "", fmt.Errorf("path %q not found in the repository", r.Config.GitPath)
+	}
+	return dir, r.Config.Revision, nil
+}
+
+// fetchOCI pulls the artifact of the revision.
+func (r *Runner) fetchOCI(ctx context.Context) (string, string, error) {
+	if r.Config.OCIPath != "" && !filepath.IsLocal(r.Config.OCIPath) {
+		return "", "", fmt.Errorf("OCI path %q must be relative to the artifact", r.Config.OCIPath)
+	}
+	creds, err := readOptionalFiles(r.Config.OCICredentialsDir, source.DockerConfigKey)
+	if err != nil {
+		return "", "", err
+	}
+	opts := source.OCIOptions{URL: r.Config.OCIURL, Insecure: r.Config.OCIInsecure, DockerConfig: creds[source.DockerConfigKey]}
+	digest := source.OCIDigest(r.Config.Revision)
+	_, _ = fmt.Fprintf(r.Log, "pulling %s@%s\n", r.Config.OCIURL, digest)
+
+	artifact := filepath.Join(r.Config.WorkDir, "artifact")
+	if err := os.MkdirAll(artifact, 0o755); err != nil {
+		return "", "", err
+	}
+	if err := source.PullOCI(ctx, opts, digest, artifact); err != nil {
+		return "", "", err
+	}
+	dir := filepath.Join(artifact, filepath.FromSlash(r.Config.OCIPath))
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return "", "", fmt.Errorf("path %q not found in the artifact", r.Config.OCIPath)
 	}
 	return dir, r.Config.Revision, nil
 }

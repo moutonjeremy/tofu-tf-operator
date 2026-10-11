@@ -39,6 +39,9 @@ const (
 	EnvRevision      = "TFOP_REVISION"
 	EnvGitURL        = "TFOP_GIT_URL"
 	EnvGitPath       = "TFOP_GIT_PATH"
+	EnvOCIURL        = "TFOP_OCI_URL"
+	EnvOCIPath       = "TFOP_OCI_PATH"
+	EnvOCIInsecure   = "TFOP_OCI_INSECURE"
 	EnvInlineSource  = "TFOP_INLINE_SOURCE"
 	EnvBackendType   = "TFOP_BACKEND_TYPE"
 	EnvBackendCustom = "TFOP_BACKEND_CUSTOM"
@@ -64,6 +67,8 @@ const (
 	DefaultWorkDir           = "/workspace"
 	DefaultGitCredentialsDir = "/etc/tofu-runner/git"
 	DefaultConfigMapDir      = "/etc/tofu-runner/source"
+	// DefaultOCICredentialsDir holds the .dockerconfigjson of the registry.
+	DefaultOCICredentialsDir = "/etc/tofu-runner/oci"
 	// DefaultPlanStorageDir holds the credentials of the plan storage (S3 keys or Postgres URL).
 	DefaultPlanStorageDir = "/etc/tofu-runner/plan-storage"
 )
@@ -73,6 +78,7 @@ type SourceKind string
 
 const (
 	SourceGit       SourceKind = "git"
+	SourceOCI       SourceKind = "oci"
 	SourceConfigMap SourceKind = "configmap"
 	SourceInline    SourceKind = "inline"
 )
@@ -104,6 +110,11 @@ type Config struct {
 	GitCredentialsDir string
 	InlineSource      string
 	ConfigMapDir      string
+
+	OCIURL            string
+	OCIPath           string
+	OCIInsecure       bool
+	OCICredentialsDir string
 
 	BackendType   infrav1alpha1.BackendType
 	BackendCustom string
@@ -155,6 +166,10 @@ func ConfigFromEnv() (Config, error) {
 		GitPath:           os.Getenv(EnvGitPath),
 		GitCredentialsDir: DefaultGitCredentialsDir,
 		InlineSource:      os.Getenv(EnvInlineSource),
+		OCIURL:            os.Getenv(EnvOCIURL),
+		OCIPath:           os.Getenv(EnvOCIPath),
+		OCIInsecure:       os.Getenv(EnvOCIInsecure) == "true",
+		OCICredentialsDir: DefaultOCICredentialsDir,
 		ConfigMapDir:      DefaultConfigMapDir,
 		BackendType:       infrav1alpha1.BackendType(os.Getenv(EnvBackendType)),
 		BackendCustom:     os.Getenv(EnvBackendCustom),

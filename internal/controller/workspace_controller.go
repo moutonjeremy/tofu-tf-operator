@@ -317,6 +317,25 @@ func (r *WorkspaceReconciler) resolveRevision(ctx context.Context, ws *infrav1al
 		}
 		return revision, interval, nil
 
+	case src.OCI != nil:
+		opts := source.OCIOptions{URL: src.OCI.URL, Insecure: src.OCI.Insecure}
+		if src.OCI.SecretRef != nil {
+			s := &corev1.Secret{}
+			if err := r.Get(ctx, types.NamespacedName{Namespace: ws.Namespace, Name: src.OCI.SecretRef.Name}, s); err != nil {
+				return "", 0, fmt.Errorf("reading the registry Secret: %w", err)
+			}
+			opts.DockerConfig = s.Data[source.DockerConfigKey]
+		}
+		revision, err := source.ResolveOCI(ctx, opts, src.OCI.Ref.Tag, src.OCI.Ref.Digest)
+		if err != nil {
+			return "", 0, err
+		}
+		interval := time.Minute
+		if src.OCI.Interval != nil && src.OCI.Interval.Duration > 0 {
+			interval = src.OCI.Interval.Duration
+		}
+		return revision, interval, nil
+
 	case src.ConfigMap != nil:
 		cm := &corev1.ConfigMap{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: ws.Namespace, Name: src.ConfigMap.Name}, cm); err != nil {

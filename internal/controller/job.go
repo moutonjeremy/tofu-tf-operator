@@ -110,6 +110,12 @@ func buildStepJob(run *infrav1alpha1.Run, ws *infrav1alpha1.Workspace, step runn
 		}})
 		mounts = append(mounts, corev1.VolumeMount{Name: "git-credentials", MountPath: runner.DefaultGitCredentialsDir, ReadOnly: true})
 	}
+	if oci := ws.Spec.Source.OCI; oci != nil && oci.SecretRef != nil {
+		volumes = append(volumes, corev1.Volume{Name: "oci-credentials", VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{SecretName: oci.SecretRef.Name, DefaultMode: ptr.To[int32](0o440)},
+		}})
+		mounts = append(mounts, corev1.VolumeMount{Name: "oci-credentials", MountPath: runner.DefaultOCICredentialsDir, ReadOnly: true})
+	}
 	if ref := planStorageSecret(ws); ref != "" {
 		volumes = append(volumes, corev1.Volume{Name: "plan-storage", VolumeSource: corev1.VolumeSource{
 			Secret: &corev1.SecretVolumeSource{SecretName: ref, DefaultMode: ptr.To[int32](0o440)},
@@ -229,6 +235,13 @@ func runnerEnv(run *infrav1alpha1.Run, ws *infrav1alpha1.Workspace, step runner.
 		add(runner.EnvSourceKind, string(runner.SourceGit))
 		add(runner.EnvGitURL, src.Git.URL)
 		add(runner.EnvGitPath, src.Git.Path)
+	case src.OCI != nil:
+		add(runner.EnvSourceKind, string(runner.SourceOCI))
+		add(runner.EnvOCIURL, src.OCI.URL)
+		add(runner.EnvOCIPath, src.OCI.Path)
+		if src.OCI.Insecure {
+			add(runner.EnvOCIInsecure, "true")
+		}
 	case src.ConfigMap != nil:
 		add(runner.EnvSourceKind, string(runner.SourceConfigMap))
 	default:

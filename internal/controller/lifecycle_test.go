@@ -19,8 +19,18 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/registry"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/static"
+	ggcrtypes "github.com/google/go-containerregistry/pkg/v1/types"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -371,6 +381,47 @@ var _ = Describe("Workspace lifecycle", func() {
 		Expect(k8sClient.Update(ctx, secret)).To(Succeed())
 		reconcileWorkspace("inputs")
 		Expect(getRun("inputs-2").Spec.Trigger).To(Equal(infrav1alpha1.TriggerInputChange))
+	})
+
+	It("follows the tag of an OCI artifact", func() {
+		server := httptest.NewServer(registry.New())
+		DeferCleanup(server.Close)
+		host := strings.TrimPrefix(server.URL, "http://")
+		push := func(content string) string {
+			GinkgoHelper()
+			img, err := mutate.Append(mutate.MediaType(empty.Image, ggcrtypes.OCIManifestSchema1), mutate.Addendum{
+				Layer:       static.NewLayer([]byte(content), "application/vnd.oci.image.layer.v1.tar"),
+				Annotations: map[string]string{"org.opencontainers.image.title": "main.tf"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			tag, err := name.NewTag(host+"/acme/vpc:stable", name.Insecure)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(remote.Write(tag, img)).To(Succeed())
+			digest, err := img.Digest()
+			Expect(err).NotTo(HaveOccurred())
+			return digest.String()
+		}
+
+		first := push("# v1")
+		createWorkspace("oci", func(ws *infrav1alpha1.Workspace) {
+			ws.Spec.Source = infrav1alpha1.SourceSpec{OCI: &infrav1alpha1.OCISource{
+				URL: "oci://" + host + "/acme/vpc", Ref: infrav1alpha1.OCIRef{Tag: "stable"}, Insecure: true,
+			}}
+		})
+		Expect(getRun("oci-1").Spec.Revision).To(Equal("stable@" + first))
+		job := &batchv1.Job{}
+		reconcileRun("oci-1")
+		Expect(k8sClient.Get(ctx, key("oci-1-plan"), job)).To(Succeed())
+		Expect(job.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: runner.EnvSourceKind, Value: "oci"}))
+		finishJob("oci-1-plan", planResult(0, 0), true)
+		reconcileRun("oci-1")
+
+		By("planning again when the tag moves")
+		second := push("# v2")
+		reconcileWorkspace("oci")
+		run := getRun("oci-2")
+		Expect(run.Spec.Trigger).To(Equal(infrav1alpha1.TriggerSourceChange))
+		Expect(run.Spec.Revision).To(Equal("stable@" + second))
 	})
 
 	It("plans again once when the plan became stale", func() {
