@@ -18,46 +18,121 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	infrav1alpha1 "github.com/labbs/tofu-tf-operator/api/v1alpha1"
 )
 
-// ReceiverReconciler reconciles a Receiver object
+const (
+	// ReceiverPathIndex indexes Receivers by their webhook path.
+	ReceiverPathIndex = ".status.webhookPath"
+	// receiverSecretIndex indexes Receivers by the Secret holding their token.
+	receiverSecretIndex = ".spec.secretRef.name"
+)
+
+// ReceiverWebhookPath derives the path of a Receiver from its token, so that the path
+// cannot be guessed and changes with the token.
+func ReceiverWebhookPath(token, name, namespace string) string {
+	sum := sha256.Sum256([]byte(token + name + namespace))
+	return "/hook/" + hex.EncodeToString(sum[:])
+}
+
+// IndexReceiverPath is the function of the ReceiverPathIndex.
+func IndexReceiverPath(obj client.Object) []string {
+	if path := obj.(*infrav1alpha1.Receiver).Status.WebhookPath; path != "" {
+		return []string{path}
+	}
+	return nil
+}
+
+// ReceiverReconciler publishes the webhook path of the Receivers.
 type ReceiverReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=infra.labbs.fr,resources=receivers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=infra.labbs.fr,resources=receivers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=infra.labbs.fr,resources=receivers/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=infra.labbs.fr,resources=receivers/finalizers,verbs=update
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the Receiver object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.25.0/pkg/reconcile
+// Reconcile computes the webhook path of a Receiver from its token.
 func (r *ReceiverReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	receiver := &infrav1alpha1.Receiver{}
+	if err := r.Get(ctx, req.NamespacedName, receiver); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	original := receiver.DeepCopy()
 
-	// TODO(user): your logic here
-
+	condition := metav1.Condition{
+		Type:               infrav1alpha1.ConditionReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             infrav1alpha1.ReasonSucceeded,
+		Message:            "the webhook path is in status.webhookPath",
+		ObservedGeneration: receiver.Generation,
+	}
+	secret := &corev1.Secret{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: receiver.Namespace, Name: receiver.Spec.SecretRef.Name}, secret)
+	token := strings.TrimSpace(string(secret.Data[infrav1alpha1.ReceiverTokenKey]))
+	switch {
+	case err != nil:
+		receiver.Status.WebhookPath = ""
+		condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "SecretNotFound", err.Error()
+	case token == "":
+		receiver.Status.WebhookPath = ""
+		condition.Status, condition.Reason = metav1.ConditionFalse, "TokenMissing"
+		condition.Message = "the Secret " + secret.Name + " has no " + infrav1alpha1.ReceiverTokenKey + " key"
+	default:
+		receiver.Status.WebhookPath = ReceiverWebhookPath(token, receiver.Name, receiver.Namespace)
+	}
+	meta.SetStatusCondition(&receiver.Status.Conditions, condition)
+	receiver.Status.ObservedGeneration = receiver.Generation
+	if err := r.Status().Patch(ctx, receiver, client.MergeFrom(original)); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
 	return ctrl.Result{}, nil
 }
 
+// receiversForSecret returns the Receivers whose token is in a Secret.
+func (r *ReceiverReconciler) receiversForSecret(ctx context.Context, obj client.Object) []reconcile.Request {
+	list := &infrav1alpha1.ReceiverList{}
+	if err := r.List(ctx, list, client.InNamespace(obj.GetNamespace()), client.MatchingFields{receiverSecretIndex: obj.GetName()}); err != nil {
+		logf.FromContext(ctx).Error(err, "listing the Receivers of a Secret")
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(list.Items))
+	for _, receiver := range list.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&receiver)})
+	}
+	return requests
+}
+
 // SetupWithManager sets up the controller with the Manager.
-func (r *ReceiverReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *ReceiverReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
+	indexer := mgr.GetFieldIndexer()
+	if err := indexer.IndexField(ctx, &infrav1alpha1.Receiver{}, ReceiverPathIndex, IndexReceiverPath); err != nil {
+		return err
+	}
+	if err := indexer.IndexField(ctx, &infrav1alpha1.Receiver{}, receiverSecretIndex, func(obj client.Object) []string {
+		return []string{obj.(*infrav1alpha1.Receiver).Spec.SecretRef.Name}
+	}); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&infrav1alpha1.Receiver{}).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.receiversForSecret), builder.OnlyMetadata).
 		Named("receiver").
 		Complete(r)
 }

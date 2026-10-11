@@ -44,6 +44,7 @@ import (
 	infrav1alpha1 "github.com/labbs/tofu-tf-operator/api/v1alpha1"
 	"github.com/labbs/tofu-tf-operator/internal/controller"
 	"github.com/labbs/tofu-tf-operator/internal/notify"
+	"github.com/labbs/tofu-tf-operator/internal/receiver"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -77,6 +78,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var runnerImage string
+	var receiverAddr string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -97,6 +99,8 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.StringVar(&receiverAddr, "receiver-bind-address", ":9292",
+		"The address the Receiver webhooks are served on. Set to 0 to disable them.")
 	flag.StringVar(&runnerImage, "runner-image", envOrDefault("RUNNER_IMAGE", defaultRunnerImage),
 		"The default image of the runner Jobs. Defaults to the RUNNER_IMAGE environment variable.")
 	opts := zap.Options{
@@ -234,9 +238,15 @@ func main() {
 	if err := (&controller.ReceiverReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(ctx, mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "receiver")
 		os.Exit(1)
+	}
+	if receiverAddr != "0" {
+		if err := mgr.Add(&receiver.Server{Client: mgr.GetClient(), Addr: receiverAddr}); err != nil {
+			setupLog.Error(err, "Failed to add the Receiver webhook server")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 

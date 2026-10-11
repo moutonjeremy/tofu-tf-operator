@@ -73,6 +73,7 @@ rules:
   - infra.labbs.fr
   resources:
   - notificationproviders
+  - receivers
   verbs:
   - get
   - list
@@ -80,7 +81,16 @@ rules:
 - apiGroups:
   - infra.labbs.fr
   resources:
-  - receivers
+  - receivers/status
+  - runs/status
+  - workspaces/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - infra.labbs.fr
+  resources:
   - runs
   - workspaces
   verbs:
@@ -94,20 +104,9 @@ rules:
 - apiGroups:
   - infra.labbs.fr
   resources:
-  - receivers/finalizers
   - runs/finalizers
   - workspaces/finalizers
   verbs:
-  - update
-- apiGroups:
-  - infra.labbs.fr
-  resources:
-  - receivers/status
-  - runs/status
-  - workspaces/status
-  verbs:
-  - get
-  - patch
   - update
 - apiGroups:
   - rbac.authorization.k8s.io

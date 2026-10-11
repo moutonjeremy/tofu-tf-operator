@@ -6,4 +6,13 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: receiver-sample
 spec:
-  # TODO(user): Add fields here
+  # github checks X-Hub-Signature-256, gitlab checks X-Gitlab-Token,
+  # generic checks "Authorization: Bearer <token>".
+  type: github
+  # Create it with: kubectl create secret generic receiver-token --from-literal=token=$(openssl rand -hex 32)
+  secretRef:
+    name: receiver-token
+  # Workspaces checking their source on each push; all the Workspaces of the namespace when unset.
+  workspaceSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: infra
