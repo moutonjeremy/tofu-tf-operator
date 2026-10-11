@@ -5,6 +5,7 @@ resources:
 - bases/infra.labbs.fr_workspaces.yaml
 - bases/infra.labbs.fr_runs.yaml
 - bases/infra.labbs.fr_notificationproviders.yaml
+- bases/infra.labbs.fr_receivers.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

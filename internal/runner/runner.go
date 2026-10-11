@@ -35,7 +35,10 @@ const logTailSize = 8 * 1024
 // Runner executes the steps of a Run.
 type Runner struct {
 	Config Config
-	Store  Store
+	// Plans keeps the plan between the steps.
+	Plans PlanStore
+	// Outputs receives the outputs.
+	Outputs OutputStore
 	// Bin is the path of the engine binary.
 	Bin string
 	// Log receives the output of the step.
@@ -126,7 +129,7 @@ func (r *Runner) plan(ctx context.Context, result *Result) error {
 	}
 	summary.HasChanges = true
 	summary.Digest = Digest(plan)
-	if err := r.Store.SavePlan(ctx, plan); err != nil {
+	if err := r.Plans.SavePlan(ctx, plan); err != nil {
 		return fmt.Errorf("saving the plan: %w", err)
 	}
 	result.Plan = &summary
@@ -146,7 +149,7 @@ func (r *Runner) apply(ctx context.Context, result *Result) error {
 			result.Revision, r.Config.Revision)
 	}
 
-	plan, err := r.Store.LoadPlan(ctx)
+	plan, err := r.Plans.LoadPlan(ctx)
 	if err != nil {
 		return err
 	}
@@ -157,15 +160,20 @@ func (r *Runner) apply(ctx context.Context, result *Result) error {
 	if err := os.WriteFile(planFile, plan, 0o600); err != nil {
 		return err
 	}
-	if err := tofu.Apply(ctx, planFile); err != nil {
-		return err
+	applyErr := tofu.Apply(ctx, planFile)
+	// Once applied, or failed, the plan cannot be applied again; it holds sensitive data.
+	if err := r.Plans.DeletePlan(ctx); err != nil {
+		_, _ = fmt.Fprintf(r.Log, "warning: deleting the stored plan: %v\n", err)
+	}
+	if applyErr != nil {
+		return applyErr
 	}
 
 	if r.Config.OutputsSecret == "" {
 		return nil
 	}
 	if r.Config.Operation == infrav1alpha1.OperationDestroy {
-		return r.Store.DeleteOutputs(ctx)
+		return r.Outputs.DeleteOutputs(ctx)
 	}
 	outputJSON, err := tofu.OutputJSON(ctx)
 	if err != nil {
@@ -175,7 +183,7 @@ func (r *Runner) apply(ctx context.Context, result *Result) error {
 	if err != nil {
 		return err
 	}
-	if err := r.Store.SaveOutputs(ctx, outputs); err != nil {
+	if err := r.Outputs.SaveOutputs(ctx, outputs); err != nil {
 		return fmt.Errorf("saving the outputs: %w", err)
 	}
 	_, _ = fmt.Fprintf(r.Log, "outputs written to Secret %s\n", r.Config.OutputsSecret)

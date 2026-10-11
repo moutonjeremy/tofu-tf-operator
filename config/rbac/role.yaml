@@ -80,6 +80,7 @@ rules:
 - apiGroups:
   - infra.labbs.fr
   resources:
+  - receivers
   - runs
   - workspaces
   verbs:
@@ -93,6 +94,7 @@ rules:
 - apiGroups:
   - infra.labbs.fr
   resources:
+  - receivers/finalizers
   - runs/finalizers
   - workspaces/finalizers
   verbs:
@@ -100,6 +102,7 @@ rules:
 - apiGroups:
   - infra.labbs.fr
   resources:
+  - receivers/status
   - runs/status
   - workspaces/status
   verbs:

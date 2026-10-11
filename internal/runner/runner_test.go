@@ -53,6 +53,8 @@ func (m *memStore) SaveOutputs(_ context.Context, outputs map[string][]byte) err
 
 func (m *memStore) DeleteOutputs(_ context.Context) error { m.outputs = nil; return nil }
 
+func (m *memStore) DeletePlan(_ context.Context) error { m.plan = nil; return nil }
+
 // tofuBin returns the engine binary used by the integration tests (set by `make test`).
 func tofuBin(t *testing.T) string {
 	t.Helper()
@@ -86,7 +88,7 @@ output "tags" {
 `
 
 // newTestRunner returns a runner with its own work directory, like a Job would have.
-func newTestRunner(t *testing.T, bin, stateFile string, store Store, operation infrav1alpha1.RunOperation) *Runner {
+func newTestRunner(t *testing.T, bin, stateFile string, store *memStore, operation infrav1alpha1.RunOperation) *Runner {
 	t.Helper()
 	return &Runner{
 		Config: Config{
@@ -107,9 +109,10 @@ func newTestRunner(t *testing.T, bin, stateFile string, store Store, operation i
 			OutputsSecret: "ws-outputs",
 			WorkDir:       t.TempDir(),
 		},
-		Store: store,
-		Bin:   bin,
-		Log:   io.Discard,
+		Plans:   store,
+		Outputs: store,
+		Bin:     bin,
+		Log:     io.Discard,
 	}
 }
 
@@ -136,6 +139,9 @@ func TestRunnerLifecycle(t *testing.T) {
 	applier.Config.PlanDigest = plan.Plan.Digest
 	if apply := applier.Run(ctx, StepApply); apply.Error != "" {
 		t.Fatalf("apply failed: %s\n%s", apply.Error, apply.LogTail)
+	}
+	if store.plan != nil {
+		t.Fatal("the plan must be deleted once applied")
 	}
 	if got := string(store.outputs["name"]); got != "demo-platform" {
 		t.Fatalf("unexpected name output %q", got)

@@ -392,6 +392,95 @@ spec:
                 required:
                 - secretName
                 type: object
+              planStorage:
+                default: {}
+                description: planStorage configures where plans are kept between the
+                  plan and apply steps.
+                properties:
+                  postgres:
+                    description: postgres configures the PostgreSQL storage.
+                    properties:
+                      secretRef:
+                        description: |-
+                          secretRef references a Secret with the connection URL in the `url` key,
+                          e.g. postgres://user:password@host:5432/db?sslmode=require.
+                        properties:
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      table:
+                        default: tofu_plans
+                        description: table receiving the plans; it is created if needed.
+                        pattern: ^[a-z_][a-z0-9_]*$
+                        type: string
+                    required:
+                    - secretRef
+                    type: object
+                  s3:
+                    description: s3 configures the S3 storage.
+                    properties:
+                      bucket:
+                        description: bucket receiving the plans.
+                        minLength: 3
+                        type: string
+                      endpoint:
+                        description: |-
+                          endpoint of an S3 compatible service, e.g. https://minio.example.com.
+                          Defaults to AWS S3.
+                        pattern: ^https?://
+                        type: string
+                      pathStyle:
+                        description: pathStyle uses path-style URLs (endpoint/bucket/key),
+                          required by some compatible services.
+                        type: boolean
+                      prefix:
+                        description: prefix of the object keys.
+                        type: string
+                      region:
+                        description: region of the bucket.
+                        type: string
+                      secretRef:
+                        description: |-
+                          secretRef references a Secret with the keys AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+                          and optionally AWS_SESSION_TOKEN. Without it, the credentials come from the
+                          environment of the runner (spec.env) or from its ServiceAccount (IRSA, pod identity).
+                        properties:
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                        type: object
+                        x-kubernetes-map-type: atomic
+                    required:
+                    - bucket
+                    type: object
+                  type:
+                    default: Secret
+                    description: type of storage.
+                    enum:
+                    - Secret
+                    - S3
+                    - Postgres
+                    type: string
+                type: object
+                x-kubernetes-validations:
+                - message: s3 must be set if and only if type is S3
+                  rule: (has(self.type) && self.type == 'S3') == has(self.s3)
+                - message: postgres must be set if and only if type is Postgres
+                  rule: (has(self.type) && self.type == 'Postgres') == has(self.postgres)
               runHistoryLimit:
                 default: 10
                 description: runHistoryLimit is the number of finished Runs kept for
@@ -609,11 +698,66 @@ spec:
                       environment variable, hence its size limit; use a ConfigMap or git for larger configurations.
                     maxLength: 65536
                     type: string
+                  oci:
+                    description: oci fetches the configuration from an OCI artifact
+                      stored in a container registry.
+                    properties:
+                      insecure:
+                        description: insecure allows plain HTTP registries.
+                        type: boolean
+                      interval:
+                        default: 1m
+                        description: interval at which the tag is checked for a new
+                          digest.
+                        type: string
+                      path:
+                        description: path of the root module inside the artifact.
+                        type: string
+                        x-kubernetes-validations:
+                        - message: path must be relative and must not contain '..'
+                          rule: '!self.startsWith(''/'') && !self.contains(''..'')'
+                      ref:
+                        description: ref to pull. Defaults to the latest tag.
+                        properties:
+                          digest:
+                            description: digest to pull, e.g. sha256:4f2c...
+                            pattern: ^sha256:[0-9a-f]{64}$
+                            type: string
+                          tag:
+                            description: tag to pull.
+                            type: string
+                        type: object
+                        x-kubernetes-validations:
+                        - message: at most one of tag or digest can be set
+                          rule: '!(has(self.tag) && has(self.digest))'
+                      secretRef:
+                        description: |-
+                          secretRef references a Secret of type kubernetes.io/dockerconfigjson with the
+                          credentials of the registry.
+                        properties:
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      url:
+                        description: url of the repository, e.g. oci://ghcr.io/acme/modules/vpc.
+                        pattern: ^oci://[^/]+/.+$
+                        type: string
+                    required:
+                    - url
+                    type: object
                 type: object
                 x-kubernetes-validations:
-                - message: exactly one of git, configMap or inline must be set
-                  rule: '(has(self.git) ? 1 : 0) + (has(self.configMap) ? 1 : 0) +
-                    (has(self.inline) ? 1 : 0) == 1'
+                - message: exactly one of git, oci, configMap or inline must be set
+                  rule: '(has(self.git) ? 1 : 0) + (has(self.oci) ? 1 : 0) + (has(self.configMap)
+                    ? 1 : 0) + (has(self.inline) ? 1 : 0) == 1'
               suspend:
                 description: suspend prevents new runs from being created.
                 type: boolean

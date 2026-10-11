@@ -72,6 +72,15 @@ func envValue(env []corev1.EnvVar, name string) (corev1.EnvVar, bool) {
 	return found, ok
 }
 
+func hasMount(c corev1.Container, name, path string) bool {
+	for _, m := range c.VolumeMounts {
+		if m.Name == name && m.MountPath == path {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBuildStepJob(t *testing.T) {
 	ws := &infrav1alpha1.Workspace{
 		ObjectMeta: metav1.ObjectMeta{Name: "vpc", Namespace: "infra", UID: "ws-uid"},
@@ -173,4 +182,45 @@ func TestBuildStepJob(t *testing.T) {
 	if apply.Spec.Template.Spec.Containers[0].Image != "runner:custom" || apply.Spec.Template.Spec.ServiceAccountName != "custom-sa" {
 		t.Error("the runner settings of the Workspace must be used")
 	}
+}
+
+func TestBuildStepJobPlanStorage(t *testing.T) {
+	ws := &infrav1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "vpc", Namespace: "infra"},
+		Spec:       infrav1alpha1.WorkspaceSpec{Source: infrav1alpha1.SourceSpec{Inline: "# empty"}},
+	}
+	run := &infrav1alpha1.Run{ObjectMeta: metav1.ObjectMeta{Name: "vpc-3", Namespace: "infra"}}
+	job, err := buildStepJob(run, ws, runner.StepPlan, "runner:default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := job.Spec.Template.Spec.Containers[0]
+	if _, ok := envValue(c.Env, runner.EnvS3Bucket); ok {
+		t.Error("no S3 settings without an S3 plan storage")
+	}
+	if e, _ := envValue(c.Env, runner.EnvPlanStorage); e.Value != "" {
+		t.Errorf("the default plan storage is left to the runner, got %q", e.Value)
+	}
+
+	ws.Spec.PlanStorage = infrav1alpha1.PlanStorageSpec{Type: infrav1alpha1.PlanStorageS3, S3: &infrav1alpha1.S3PlanStorage{
+		Bucket: "plans", Prefix: "tofu/", Endpoint: "https://minio.example.com", PathStyle: true,
+		SecretRef: &corev1.LocalObjectReference{Name: "s3-creds"},
+	}}
+	s3Job, err := buildStepJob(run, ws, runner.StepPlan, "runner:default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s3Container := s3Job.Spec.Template.Spec.Containers[0]
+	for name, want := range map[string]string{
+		runner.EnvPlanStorage: "S3", runner.EnvS3Bucket: "plans", runner.EnvS3Prefix: "tofu/",
+		runner.EnvS3Endpoint: "https://minio.example.com", runner.EnvS3PathStyle: "true",
+	} {
+		if e, _ := envValue(s3Container.Env, name); e.Value != want {
+			t.Errorf("env %s = %q, want %q", name, e.Value, want)
+		}
+	}
+	if !hasMount(s3Container, "plan-storage", runner.DefaultPlanStorageDir) {
+		t.Error("the S3 credentials must be mounted")
+	}
+
 }

@@ -1,0 +1,9 @@
+apiVersion: infra.labbs.fr/v1alpha1
+kind: Receiver
+metadata:
+  labels:
+    app.kubernetes.io/name: tofu-tf-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: receiver-sample
+spec:
+  # TODO(user): Add fields here

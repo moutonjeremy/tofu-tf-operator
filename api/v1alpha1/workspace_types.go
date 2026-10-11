@@ -48,11 +48,15 @@ type EngineSpec struct {
 }
 
 // SourceSpec describes where the configuration comes from. Exactly one field must be set.
-// +kubebuilder:validation:XValidation:rule="(has(self.git) ? 1 : 0) + (has(self.configMap) ? 1 : 0) + (has(self.inline) ? 1 : 0) == 1",message="exactly one of git, configMap or inline must be set"
+// +kubebuilder:validation:XValidation:rule="(has(self.git) ? 1 : 0) + (has(self.oci) ? 1 : 0) + (has(self.configMap) ? 1 : 0) + (has(self.inline) ? 1 : 0) == 1",message="exactly one of git, oci, configMap or inline must be set"
 type SourceSpec struct {
 	// git fetches the configuration from a Git repository.
 	// +optional
 	Git *GitSource `json:"git,omitempty"`
+
+	// oci fetches the configuration from an OCI artifact stored in a container registry.
+	// +optional
+	OCI *OCISource `json:"oci,omitempty"`
 
 	// configMap loads the configuration from a ConfigMap, each key being written as a file.
 	// +optional
@@ -108,6 +112,51 @@ type GitRef struct {
 	// +kubebuilder:validation:Pattern=`^[0-9a-f]{40}$`
 	// +optional
 	Commit string `json:"commit,omitempty"`
+}
+
+// OCISource is an OCI artifact holding the root module, pushed for instance with
+// `oras push` (one layer per file) or `flux push artifact` (a tar.gz layer).
+type OCISource struct {
+	// url of the repository, e.g. oci://ghcr.io/acme/modules/vpc.
+	// +kubebuilder:validation:Pattern=`^oci://[^/]+/.+$`
+	// +required
+	URL string `json:"url"`
+
+	// ref to pull. Defaults to the latest tag.
+	// +optional
+	Ref OCIRef `json:"ref,omitzero"`
+
+	// path of the root module inside the artifact.
+	// +kubebuilder:validation:XValidation:rule="!self.startsWith('/') && !self.contains('..')",message="path must be relative and must not contain '..'"
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// secretRef references a Secret of type kubernetes.io/dockerconfigjson with the
+	// credentials of the registry.
+	// +optional
+	SecretRef *corev1.LocalObjectReference `json:"secretRef,omitempty"`
+
+	// insecure allows plain HTTP registries.
+	// +optional
+	Insecure bool `json:"insecure,omitempty"`
+
+	// interval at which the tag is checked for a new digest.
+	// +kubebuilder:default="1m"
+	// +optional
+	Interval *metav1.Duration `json:"interval,omitempty"`
+}
+
+// OCIRef selects the artifact to pull. At most one field can be set.
+// +kubebuilder:validation:XValidation:rule="!(has(self.tag) && has(self.digest))",message="at most one of tag or digest can be set"
+type OCIRef struct {
+	// tag to pull.
+	// +optional
+	Tag string `json:"tag,omitempty"`
+
+	// digest to pull, e.g. sha256:4f2c...
+	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
+	// +optional
+	Digest string `json:"digest,omitempty"`
 }
 
 // ConfigMapSource loads the configuration from a ConfigMap.
@@ -194,6 +243,85 @@ type BackendSpec struct {
 	// +kubebuilder:validation:MaxLength=16384
 	// +optional
 	Custom string `json:"custom,omitempty"`
+}
+
+// PlanStorageType selects where plans are kept between the plan and apply steps.
+// +kubebuilder:validation:Enum=Secret;S3;Postgres
+type PlanStorageType string
+
+const (
+	// PlanStorageSecret keeps plans in Secrets, limited to 1 MiB.
+	PlanStorageSecret PlanStorageType = "Secret"
+	// PlanStorageS3 keeps plans in a bucket of S3 or of a compatible service (MinIO, R2...).
+	PlanStorageS3 PlanStorageType = "S3"
+	// PlanStoragePostgres keeps plans in a PostgreSQL table.
+	PlanStoragePostgres PlanStorageType = "Postgres"
+)
+
+// PlanStorageSpec configures where plans are kept between the plan and apply steps.
+// Plans hold a snapshot of the state and the values of the variables: the storage must
+// be as protected as the state.
+// +kubebuilder:validation:XValidation:rule="(has(self.type) && self.type == 'S3') == has(self.s3)",message="s3 must be set if and only if type is S3"
+// +kubebuilder:validation:XValidation:rule="(has(self.type) && self.type == 'Postgres') == has(self.postgres)",message="postgres must be set if and only if type is Postgres"
+type PlanStorageSpec struct {
+	// type of storage.
+	// +kubebuilder:default=Secret
+	// +optional
+	Type PlanStorageType `json:"type,omitempty"`
+
+	// s3 configures the S3 storage.
+	// +optional
+	S3 *S3PlanStorage `json:"s3,omitempty"`
+
+	// postgres configures the PostgreSQL storage.
+	// +optional
+	Postgres *PostgresPlanStorage `json:"postgres,omitempty"`
+}
+
+// S3PlanStorage is a bucket of S3 or of a compatible service.
+type S3PlanStorage struct {
+	// bucket receiving the plans.
+	// +kubebuilder:validation:MinLength=3
+	// +required
+	Bucket string `json:"bucket"`
+
+	// prefix of the object keys.
+	// +optional
+	Prefix string `json:"prefix,omitempty"`
+
+	// region of the bucket.
+	// +optional
+	Region string `json:"region,omitempty"`
+
+	// endpoint of an S3 compatible service, e.g. https://minio.example.com.
+	// Defaults to AWS S3.
+	// +kubebuilder:validation:Pattern=`^https?://`
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// pathStyle uses path-style URLs (endpoint/bucket/key), required by some compatible services.
+	// +optional
+	PathStyle bool `json:"pathStyle,omitempty"`
+
+	// secretRef references a Secret with the keys AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+	// and optionally AWS_SESSION_TOKEN. Without it, the credentials come from the
+	// environment of the runner (spec.env) or from its ServiceAccount (IRSA, pod identity).
+	// +optional
+	SecretRef *corev1.LocalObjectReference `json:"secretRef,omitempty"`
+}
+
+// PostgresPlanStorage is a PostgreSQL database.
+type PostgresPlanStorage struct {
+	// secretRef references a Secret with the connection URL in the `url` key,
+	// e.g. postgres://user:password@host:5432/db?sslmode=require.
+	// +required
+	SecretRef corev1.LocalObjectReference `json:"secretRef"`
+
+	// table receiving the plans; it is created if needed.
+	// +kubebuilder:validation:Pattern=`^[a-z_][a-z0-9_]*$`
+	// +kubebuilder:default=tofu_plans
+	// +optional
+	Table string `json:"table,omitempty"`
 }
 
 // ApprovalMode tells whether plans are applied automatically.
@@ -296,6 +424,11 @@ type WorkspaceSpec struct {
 	// +kubebuilder:default={}
 	// +optional
 	Backend BackendSpec `json:"backend,omitzero"`
+
+	// planStorage configures where plans are kept between the plan and apply steps.
+	// +kubebuilder:default={}
+	// +optional
+	PlanStorage PlanStorageSpec `json:"planStorage,omitzero"`
 
 	// approvalMode tells whether plans with changes are applied automatically
 	// or wait for the Run to be approved.
@@ -414,6 +547,10 @@ type WorkspaceStatus struct {
 
 // RequestedAtAnnotation triggers a new run when its value changes.
 const RequestedAtAnnotation = "infra.labbs.fr/requested-at"
+
+// RefreshRequestedAtAnnotation makes the controller check the source right away, without
+// forcing a run. It is set by the Receivers.
+const RefreshRequestedAtAnnotation = "infra.labbs.fr/refresh-requested-at"
 
 // Finalizer lets the controller destroy the managed resources before a Workspace is deleted.
 const Finalizer = "infra.labbs.fr/finalizer"

@@ -12,6 +12,19 @@ jobs:
       contents: read
     name: Run on Ubuntu
     runs-on: ubuntu-latest
+    # Database of the Postgres plan storage tests.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Clone the code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -24,6 +37,8 @@ jobs:
           go-version-file: go.mod
 
       - name: Running Tests
+        env:
+          TEST_POSTGRES_URL: postgres://postgres:test@localhost:5432/postgres?sslmode=disable
         run: |
           go mod tidy
           make test

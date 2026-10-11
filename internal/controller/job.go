@@ -110,6 +110,12 @@ func buildStepJob(run *infrav1alpha1.Run, ws *infrav1alpha1.Workspace, step runn
 		}})
 		mounts = append(mounts, corev1.VolumeMount{Name: "git-credentials", MountPath: runner.DefaultGitCredentialsDir, ReadOnly: true})
 	}
+	if ref := planStorageSecret(ws); ref != "" {
+		volumes = append(volumes, corev1.Volume{Name: "plan-storage", VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{SecretName: ref, DefaultMode: ptr.To[int32](0o440)},
+		}})
+		mounts = append(mounts, corev1.VolumeMount{Name: "plan-storage", MountPath: runner.DefaultPlanStorageDir, ReadOnly: true})
+	}
 	if cm := ws.Spec.Source.ConfigMap; cm != nil {
 		volumes = append(volumes, corev1.Volume{Name: "source", VolumeSource: corev1.VolumeSource{
 			ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: cm.Name}},
@@ -202,6 +208,21 @@ func runnerEnv(run *infrav1alpha1.Run, ws *infrav1alpha1.Workspace, step runner.
 		add(runner.EnvPlanDigest, run.Status.Plan.Digest)
 	}
 
+	storage := ws.Spec.PlanStorage
+	add(runner.EnvPlanStorage, string(storage.Type))
+	if s3 := storage.S3; s3 != nil {
+		add(runner.EnvS3Bucket, s3.Bucket)
+		add(runner.EnvS3Prefix, s3.Prefix)
+		add(runner.EnvS3Region, s3.Region)
+		add(runner.EnvS3Endpoint, s3.Endpoint)
+		if s3.PathStyle {
+			add(runner.EnvS3PathStyle, "true")
+		}
+	}
+	if pg := storage.Postgres; pg != nil {
+		add(runner.EnvPostgresTable, pg.Table)
+	}
+
 	src := ws.Spec.Source
 	switch {
 	case src.Git != nil:
@@ -231,6 +252,18 @@ func runnerEnv(run *infrav1alpha1.Run, ws *infrav1alpha1.Workspace, step runner.
 		}
 	}
 	return env, nil
+}
+
+// planStorageSecret returns the Secret holding the credentials of the plan storage, if any.
+func planStorageSecret(ws *infrav1alpha1.Workspace) string {
+	storage := ws.Spec.PlanStorage
+	switch {
+	case storage.S3 != nil && storage.S3.SecretRef != nil:
+		return storage.S3.SecretRef.Name
+	case storage.Postgres != nil:
+		return storage.Postgres.SecretRef.Name
+	}
+	return ""
 }
 
 // variableValue converts a JSON value to the -var syntax: strings are passed as

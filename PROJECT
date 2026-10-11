@@ -39,4 +39,13 @@ resources:
   kind: NotificationProvider
   path: github.com/labbs/tofu-tf-operator/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: labbs.fr
+  group: infra
+  kind: Receiver
+  path: github.com/labbs/tofu-tf-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"

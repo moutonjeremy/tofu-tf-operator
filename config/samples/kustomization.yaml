@@ -2,4 +2,5 @@
 resources:
 - infra_v1alpha1_workspace.yaml
 - infra_v1alpha1_notificationprovider.yaml
+- infra_v1alpha1_receiver.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

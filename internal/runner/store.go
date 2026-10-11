@@ -45,10 +45,16 @@ func PlanSecretName(runName string) string {
 	return runName + "-plan"
 }
 
-// Store persists the artifacts of a Run between the plan and apply steps.
-type Store interface {
+// PlanStore keeps the plan of a Run between the plan and apply steps.
+type PlanStore interface {
 	SavePlan(ctx context.Context, plan []byte) error
 	LoadPlan(ctx context.Context) ([]byte, error)
+	// DeletePlan removes the plan once applied; the plan holds sensitive data.
+	DeletePlan(ctx context.Context) error
+}
+
+// OutputStore exports the outputs of the root module.
+type OutputStore interface {
 	SaveOutputs(ctx context.Context, outputs map[string][]byte) error
 	DeleteOutputs(ctx context.Context) error
 }
@@ -59,26 +65,67 @@ type SecretStore struct {
 	Config  Config
 }
 
-var _ Store = &SecretStore{}
+var (
+	_ PlanStore   = &SecretStore{}
+	_ OutputStore = &SecretStore{}
+)
 
-// SavePlan stores the gzipped plan in a Secret owned by the Run.
-func (s *SecretStore) SavePlan(ctx context.Context, plan []byte) error {
+// NewPlanStore returns the plan storage configured for the Run.
+func NewPlanStore(ctx context.Context, cfg Config, secrets corev1client.SecretsGetter) (PlanStore, error) {
+	switch cfg.PlanStorage.Type {
+	case infrav1alpha1.PlanStorageSecret:
+		return &SecretStore{Secrets: secrets, Config: cfg}, nil
+	case infrav1alpha1.PlanStorageS3:
+		return NewS3PlanStore(cfg)
+	case infrav1alpha1.PlanStoragePostgres:
+		return NewPostgresPlanStore(ctx, cfg)
+	}
+	return nil, fmt.Errorf("unknown plan storage %q", cfg.PlanStorage.Type)
+}
+
+// planObjectName identifies the plan of a Run in an external storage.
+func planObjectName(cfg Config) string {
+	return fmt.Sprintf("%s/%s/%s-%s.tfplan.gz", cfg.Namespace, cfg.WorkspaceName, cfg.RunName, cfg.RunUID)
+}
+
+// compress gzips a plan.
+func compress(plan []byte) ([]byte, error) {
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
 	if _, err := zw.Write(plan); err != nil {
-		return err
+		return nil, err
 	}
 	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// decompress reverts compress.
+func decompress(data []byte) ([]byte, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("reading the plan: %w", err)
+	}
+	defer func() { _ = zr.Close() }()
+	return io.ReadAll(zr)
+}
+
+// SavePlan stores the gzipped plan in a Secret owned by the Run.
+func (s *SecretStore) SavePlan(ctx context.Context, plan []byte) error {
+	data, err := compress(plan)
+	if err != nil {
 		return err
 	}
-	if buf.Len() > maxPlanSize {
-		return fmt.Errorf("the plan is too large to be stored in a Secret (%d bytes compressed, limit %d)", buf.Len(), maxPlanSize)
+	if len(data) > maxPlanSize {
+		return fmt.Errorf("the plan is too large to be stored in a Secret (%d bytes compressed, limit %d); "+
+			"use spec.planStorage with S3 or Postgres", len(data), maxPlanSize)
 	}
 
 	secret := &corev1.Secret{
 		ObjectMeta: s.meta(PlanSecretName(s.Config.RunName), "Run", s.Config.RunName, s.Config.RunUID),
 		Type:       corev1.SecretTypeOpaque,
-		Data:       map[string][]byte{PlanSecretKey: buf.Bytes()},
+		Data:       map[string][]byte{PlanSecretKey: data},
 	}
 	return s.upsert(ctx, secret)
 }
@@ -89,12 +136,16 @@ func (s *SecretStore) LoadPlan(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading the plan: %w", err)
 	}
-	zr, err := gzip.NewReader(bytes.NewReader(secret.Data[PlanSecretKey]))
-	if err != nil {
-		return nil, fmt.Errorf("reading the plan: %w", err)
+	return decompress(secret.Data[PlanSecretKey])
+}
+
+// DeletePlan removes the plan Secret.
+func (s *SecretStore) DeletePlan(ctx context.Context) error {
+	err := s.Secrets.Secrets(s.Config.Namespace).Delete(ctx, PlanSecretName(s.Config.RunName), metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
 	}
-	defer func() { _ = zr.Close() }()
-	return io.ReadAll(zr)
+	return err
 }
 
 // SaveOutputs replaces the content of the outputs Secret, owned by the Workspace.

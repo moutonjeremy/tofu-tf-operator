@@ -333,8 +333,16 @@ func (r *WorkspaceReconciler) resolveRevision(ctx context.Context, ws *infrav1al
 }
 
 // resolveInputs returns the revision of the Secrets and ConfigMaps holding the input
-// variables, from their metadata only.
+// variables, from their metadata only. It also checks that the Secret of the plan
+// storage exists, as the runner pods could not start without it.
 func (r *WorkspaceReconciler) resolveInputs(ctx context.Context, ws *infrav1alpha1.Workspace) (string, error) {
+	if name := planStorageSecret(ws); name != "" {
+		obj := &metav1.PartialObjectMetadata{}
+		obj.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Secret"))
+		if err := r.Get(ctx, types.NamespacedName{Namespace: ws.Namespace, Name: name}, obj); err != nil {
+			return "", fmt.Errorf("reading the Secret %s of the plan storage: %w", name, err)
+		}
+	}
 	var versions []string
 	for _, ref := range inputRefs(ws) {
 		obj := &metav1.PartialObjectMetadata{}

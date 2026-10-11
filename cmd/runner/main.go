@@ -82,11 +82,16 @@ func run(ctx context.Context, step runner.Step) (runner.Result, error) {
 		return runner.Result{}, err
 	}
 
+	plans, err := runner.NewPlanStore(ctx, cfg, client.CoreV1())
+	if err != nil {
+		return runner.Result{}, fmt.Errorf("configuring the plan storage: %w", err)
+	}
 	r := &runner.Runner{
-		Config: cfg,
-		Store:  &runner.SecretStore{Secrets: client.CoreV1(), Config: cfg},
-		Bin:    bin,
-		Log:    os.Stdout,
+		Config:  cfg,
+		Plans:   plans,
+		Outputs: &runner.SecretStore{Secrets: client.CoreV1(), Config: cfg},
+		Bin:     bin,
+		Log:     os.Stdout,
 	}
 	return r.Run(ctx, step), nil
 }

@@ -45,6 +45,14 @@ const (
 	EnvPlanDigest    = "TFOP_PLAN_DIGEST"
 	EnvOutputsSecret = "TFOP_OUTPUTS_SECRET"
 
+	EnvPlanStorage   = "TFOP_PLAN_STORAGE"
+	EnvS3Bucket      = "TFOP_S3_BUCKET"
+	EnvS3Prefix      = "TFOP_S3_PREFIX"
+	EnvS3Region      = "TFOP_S3_REGION"
+	EnvS3Endpoint    = "TFOP_S3_ENDPOINT"
+	EnvS3PathStyle   = "TFOP_S3_PATH_STYLE"
+	EnvPostgresTable = "TFOP_POSTGRES_TABLE"
+
 	// VarPrefix prefixes the environment variables holding input variables.
 	VarPrefix = "TFOP_VAR_"
 	// envPrefix prefixes every variable of the contract; they are not passed to the engine.
@@ -56,6 +64,8 @@ const (
 	DefaultWorkDir           = "/workspace"
 	DefaultGitCredentialsDir = "/etc/tofu-runner/git"
 	DefaultConfigMapDir      = "/etc/tofu-runner/source"
+	// DefaultPlanStorageDir holds the credentials of the plan storage (S3 keys or Postgres URL).
+	DefaultPlanStorageDir = "/etc/tofu-runner/plan-storage"
 )
 
 // SourceKind is where the configuration is fetched from.
@@ -101,12 +111,31 @@ type Config struct {
 	// Vars are the input variables, by name.
 	Vars map[string]string
 
+	// PlanStorage is where the plan is kept between the steps.
+	PlanStorage PlanStorageConfig
+
 	// PlanDigest is the digest of the plan to apply.
 	PlanDigest string
 	// OutputsSecret receives the outputs when not empty.
 	OutputsSecret string
 
 	WorkDir string
+}
+
+// PlanStorageConfig configures the storage of plans.
+type PlanStorageConfig struct {
+	Type infrav1alpha1.PlanStorageType
+
+	S3Bucket    string
+	S3Prefix    string
+	S3Region    string
+	S3Endpoint  string
+	S3PathStyle bool
+
+	PostgresTable string
+
+	// CredentialsDir holds the mounted Secret of the storage, if any.
+	CredentialsDir string
 }
 
 // ConfigFromEnv reads the configuration set by the Run controller.
@@ -130,9 +159,19 @@ func ConfigFromEnv() (Config, error) {
 		BackendType:       infrav1alpha1.BackendType(os.Getenv(EnvBackendType)),
 		BackendCustom:     os.Getenv(EnvBackendCustom),
 		Vars:              varsFromEnv(os.Environ()),
-		PlanDigest:        os.Getenv(EnvPlanDigest),
-		OutputsSecret:     os.Getenv(EnvOutputsSecret),
-		WorkDir:           DefaultWorkDir,
+		PlanStorage: PlanStorageConfig{
+			Type:           infrav1alpha1.PlanStorageType(os.Getenv(EnvPlanStorage)),
+			S3Bucket:       os.Getenv(EnvS3Bucket),
+			S3Prefix:       os.Getenv(EnvS3Prefix),
+			S3Region:       os.Getenv(EnvS3Region),
+			S3Endpoint:     os.Getenv(EnvS3Endpoint),
+			S3PathStyle:    os.Getenv(EnvS3PathStyle) == "true",
+			PostgresTable:  os.Getenv(EnvPostgresTable),
+			CredentialsDir: DefaultPlanStorageDir,
+		},
+		PlanDigest:    os.Getenv(EnvPlanDigest),
+		OutputsSecret: os.Getenv(EnvOutputsSecret),
+		WorkDir:       DefaultWorkDir,
 	}
 	if cfg.Operation == "" {
 		cfg.Operation = infrav1alpha1.OperationApply
@@ -142,6 +181,9 @@ func ConfigFromEnv() (Config, error) {
 	}
 	if cfg.BackendType == "" {
 		cfg.BackendType = infrav1alpha1.BackendKubernetes
+	}
+	if cfg.PlanStorage.Type == "" {
+		cfg.PlanStorage.Type = infrav1alpha1.PlanStorageSecret
 	}
 
 	var missing []string

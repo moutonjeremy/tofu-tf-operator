@@ -55,7 +55,26 @@ var _ = Describe("CRD validation", func() {
 			Expect(ws.Spec.Backend.Type).To(Equal(infrav1alpha1.BackendKubernetes))
 			Expect(ws.Spec.ApprovalMode).To(Equal(infrav1alpha1.ApprovalAuto))
 			Expect(ws.Spec.Runner.Timeout.Duration).To(Equal(time.Hour))
+			Expect(ws.Spec.PlanStorage.Type).To(Equal(infrav1alpha1.PlanStorageSecret))
 			Expect(*ws.Spec.RunHistoryLimit).To(BeEquivalentTo(10))
+		})
+
+		It("accepts the OCI source and the external plan storages", func() {
+			ws := newWorkspace("oci-postgres")
+			ws.Spec.Source = infrav1alpha1.SourceSpec{OCI: &infrav1alpha1.OCISource{URL: "oci://ghcr.io/acme/vpc", Ref: infrav1alpha1.OCIRef{Tag: "v1"}}}
+			ws.Spec.PlanStorage = infrav1alpha1.PlanStorageSpec{
+				Type:     infrav1alpha1.PlanStoragePostgres,
+				Postgres: &infrav1alpha1.PostgresPlanStorage{SecretRef: corev1.LocalObjectReference{Name: "db"}},
+			}
+			Expect(k8sClient.Create(ctx, ws)).To(Succeed())
+			DeferCleanup(k8sClient.Delete, ctx, ws)
+			Expect(ws.Spec.Source.OCI.Interval.Duration).To(Equal(time.Minute))
+			Expect(ws.Spec.PlanStorage.Postgres.Table).To(Equal("tofu_plans"))
+
+			s3 := newWorkspace("s3")
+			s3.Spec.PlanStorage = infrav1alpha1.PlanStorageSpec{Type: infrav1alpha1.PlanStorageS3, S3: &infrav1alpha1.S3PlanStorage{Bucket: "plans"}}
+			Expect(k8sClient.Create(ctx, s3)).To(Succeed())
+			DeferCleanup(k8sClient.Delete, ctx, s3)
 		})
 
 		It("defaults the git polling interval", func() {
@@ -95,6 +114,32 @@ var _ = Describe("CRD validation", func() {
 			Entry("git path escaping the repository", func(ws *infrav1alpha1.Workspace) {
 				ws.Spec.Source = infrav1alpha1.SourceSpec{Git: &infrav1alpha1.GitSource{URL: "https://x/y.git", Path: "../etc"}}
 			}),
+			Entry("git and oci sources", func(ws *infrav1alpha1.Workspace) {
+				ws.Spec.Source = infrav1alpha1.SourceSpec{
+					Git: &infrav1alpha1.GitSource{URL: "https://x/y.git"},
+					OCI: &infrav1alpha1.OCISource{URL: "oci://ghcr.io/acme/vpc"},
+				}
+			}),
+			Entry("oci url without scheme", func(ws *infrav1alpha1.Workspace) {
+				ws.Spec.Source = infrav1alpha1.SourceSpec{OCI: &infrav1alpha1.OCISource{URL: "ghcr.io/acme/vpc"}}
+			}),
+			Entry("oci ref with tag and digest", func(ws *infrav1alpha1.Workspace) {
+				ws.Spec.Source = infrav1alpha1.SourceSpec{OCI: &infrav1alpha1.OCISource{
+					URL: "oci://ghcr.io/acme/vpc",
+					Ref: infrav1alpha1.OCIRef{Tag: "v1", Digest: "sha256:" + strings.Repeat("a", 64)},
+				}}
+			}),
+			Entry("S3 plan storage without configuration", func(ws *infrav1alpha1.Workspace) {
+				ws.Spec.PlanStorage.Type = infrav1alpha1.PlanStorageS3
+			}),
+			Entry("S3 configuration with the Secret plan storage", func(ws *infrav1alpha1.Workspace) {
+				ws.Spec.PlanStorage.S3 = &infrav1alpha1.S3PlanStorage{Bucket: "plans"}
+			}),
+			Entry("invalid Postgres table name", func(ws *infrav1alpha1.Workspace) {
+				ws.Spec.PlanStorage = infrav1alpha1.PlanStorageSpec{Type: infrav1alpha1.PlanStoragePostgres, Postgres: &infrav1alpha1.PostgresPlanStorage{
+					SecretRef: corev1.LocalObjectReference{Name: "db"}, Table: "plans; drop table x",
+				}}
+			}),
 			Entry("git ref with branch and tag", func(ws *infrav1alpha1.Workspace) {
 				ws.Spec.Source = infrav1alpha1.SourceSpec{Git: &infrav1alpha1.GitSource{
 					URL: "https://x/y.git",
@@ -125,6 +170,19 @@ var _ = Describe("CRD validation", func() {
 
 			run.Spec.Revision = "def"
 			Expect(errors.IsInvalid(k8sClient.Update(ctx, run))).To(BeTrue())
+		})
+	})
+
+	Context("Receiver", func() {
+		It("requires a type and a Secret", func() {
+			receiver := &infrav1alpha1.Receiver{
+				ObjectMeta: metav1.ObjectMeta{Name: "push", Namespace: testNamespace},
+				Spec:       infrav1alpha1.ReceiverSpec{Type: "bitbucket", SecretRef: corev1.LocalObjectReference{Name: "token"}},
+			}
+			Expect(errors.IsInvalid(k8sClient.Create(ctx, receiver))).To(BeTrue())
+			receiver.Spec.Type = infrav1alpha1.ReceiverGitHub
+			Expect(k8sClient.Create(ctx, receiver)).To(Succeed())
+			DeferCleanup(k8sClient.Delete, ctx, receiver)
 		})
 	})
 
