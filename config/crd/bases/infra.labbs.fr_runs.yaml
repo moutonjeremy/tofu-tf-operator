@@ -1,0 +1,312 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: runs.infra.labbs.fr
+spec:
+  group: infra.labbs.fr
+  names:
+    categories:
+    - tofu
+    kind: Run
+    listKind: RunList
+    plural: runs
+    singular: run
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.workspaceRef.name
+      name: Workspace
+      type: string
+    - jsonPath: .spec.operation
+      name: Operation
+      type: string
+    - jsonPath: .spec.trigger
+      name: Trigger
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.plan.add
+      name: Add
+      type: integer
+    - jsonPath: .status.plan.change
+      name: Change
+      type: integer
+    - jsonPath: .status.plan.destroy
+      name: Destroy
+      type: integer
+    - jsonPath: .spec.revision
+      name: Revision
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Run is one execution (plan, then apply or destroy) of a Workspace.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of Run
+            properties:
+              approvedPlan:
+                description: |-
+                  approvedPlan approves the plan whose digest (status.plan.digest) it holds. Binding the
+                  approval to the digest guarantees that only the reviewed plan is applied.
+                pattern: ^sha256:[0-9a-f]{64}$
+                type: string
+              autoApprove:
+                description: autoApprove applies the plan without waiting for approval.
+                type: boolean
+                x-kubernetes-validations:
+                - message: autoApprove is immutable
+                  rule: self == oldSelf
+              inputsRevision:
+                description: |-
+                  inputsRevision identifies the Secrets and ConfigMaps holding the input variables
+                  when the Run was created.
+                type: string
+                x-kubernetes-validations:
+                - message: inputsRevision is immutable
+                  rule: self == oldSelf
+              operation:
+                default: Apply
+                description: operation applied once the plan is approved.
+                enum:
+                - Apply
+                - Destroy
+                type: string
+                x-kubernetes-validations:
+                - message: operation is immutable
+                  rule: self == oldSelf
+              revision:
+                description: revision of the source used by the Run, resolved by the
+                  Workspace controller.
+                type: string
+                x-kubernetes-validations:
+                - message: revision is immutable
+                  rule: self == oldSelf
+              trigger:
+                description: trigger is the reason the Run was created.
+                enum:
+                - SpecChange
+                - SourceChange
+                - InputChange
+                - Interval
+                - Manual
+                - Retry
+                - Deletion
+                type: string
+                x-kubernetes-validations:
+                - message: trigger is immutable
+                  rule: self == oldSelf
+              workspaceGeneration:
+                description: workspaceGeneration is the generation of the Workspace
+                  the Run was created for.
+                format: int64
+                type: integer
+                x-kubernetes-validations:
+                - message: workspaceGeneration is immutable
+                  rule: self == oldSelf
+              workspaceRef:
+                description: workspaceRef is the Workspace this Run belongs to.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+                x-kubernetes-validations:
+                - message: workspaceRef is immutable
+                  rule: self == oldSelf
+            required:
+            - workspaceRef
+            type: object
+          status:
+            description: status defines the observed state of Run
+            properties:
+              applyJob:
+                description: applyJob is the name of the Job running the apply step.
+                type: string
+              completedAt:
+                description: completedAt is the time the Run finished.
+                format: date-time
+                type: string
+              conditions:
+                description: conditions represent the current state of the Run resource.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              failureReason:
+                description: failureReason tells why the Run failed.
+                enum:
+                - StepFailed
+                - Timeout
+                - StalePlan
+                type: string
+              message:
+                description: message is a human readable detail about the phase, such
+                  as the error of a failed step.
+                type: string
+              notifiedEvents:
+                description: notifiedEvents are the events already sent, so each one
+                  is sent once per Run.
+                items:
+                  description: NotificationEvent is an event of a Run that can be
+                    notified.
+                  enum:
+                  - PlanHasChanges
+                  - PlanFailed
+                  - ApprovalRequired
+                  - ApplySucceeded
+                  - ApplyFailed
+                  - DriftDetected
+                  - DestroySucceeded
+                  - DestroyFailed
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+              observedGeneration:
+                description: observedGeneration is the last generation handled by
+                  the controller.
+                format: int64
+                type: integer
+              phase:
+                description: phase is the lifecycle step of the Run.
+                enum:
+                - Pending
+                - Planning
+                - AwaitingApproval
+                - Applying
+                - Applied
+                - NoChanges
+                - Failed
+                - Superseded
+                type: string
+              plan:
+                description: plan is the result of the plan step.
+                properties:
+                  add:
+                    description: add is the number of resources to create (replacements
+                      included).
+                    format: int32
+                    type: integer
+                  change:
+                    description: change is the number of resources to update in place.
+                    format: int32
+                    type: integer
+                  destroy:
+                    description: destroy is the number of resources to destroy (replacements
+                      included).
+                    format: int32
+                    type: integer
+                  digest:
+                    description: |-
+                      digest is the sha256 of the plan file, so the applied plan can be checked
+                      against the one that was reviewed.
+                    type: string
+                  hasChanges:
+                    description: hasChanges is true when resources or outputs change.
+                    type: boolean
+                  import:
+                    description: import is the number of resources to import.
+                    format: int32
+                    type: integer
+                type: object
+              planJob:
+                description: planJob is the name of the Job running the plan step.
+                type: string
+              startedAt:
+                description: startedAt is the time the plan step started.
+                format: date-time
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- infra_v1alpha1_workspace.yaml
+- infra_v1alpha1_notificationprovider.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

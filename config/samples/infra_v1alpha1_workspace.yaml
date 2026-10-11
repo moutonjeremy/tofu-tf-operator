@@ -1,0 +1,33 @@
+apiVersion: infra.labbs.fr/v1alpha1
+kind: Workspace
+metadata:
+  labels:
+    app.kubernetes.io/name: tofu-tf-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: workspace-sample
+spec:
+  # Uses only the random provider, so it runs without any cloud credentials.
+  source:
+    inline: |
+      variable "prefix" {
+        type = string
+      }
+
+      resource "random_pet" "this" {
+        prefix = var.prefix
+      }
+
+      output "pet" {
+        value = random_pet.this.id
+      }
+  vars:
+    - name: prefix
+      value: demo
+  approvalMode: Manual
+  interval: 30m
+  outputs:
+    secretName: workspace-sample-outputs
+  notifications:
+    - providerRef:
+        name: notificationprovider-sample
+      events: [ApprovalRequired, ApplySucceeded, ApplyFailed, DriftDetected]

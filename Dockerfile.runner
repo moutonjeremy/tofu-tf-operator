@@ -1,0 +1,41 @@
+# Build the runner image: the runner binary, OpenTofu, git and ssh (modules can be fetched with git).
+ARG BASE_IMAGE=golang:1.26
+ARG RUNTIME_IMAGE=alpine:3.24
+
+FROM ${BASE_IMAGE} AS builder
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /workspace
+COPY go.mod go.mod
+COPY go.sum go.sum
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o tofu-runner ./cmd/runner
+
+FROM ${RUNTIME_IMAGE} AS tofu
+ARG TARGETOS
+ARG TARGETARCH
+ARG TOFU_VERSION=1.13.1
+RUN set -eu; \
+    apk add --no-cache curl; \
+    os="${TARGETOS:-linux}"; arch="${TARGETARCH:-$(apk --print-arch | sed 's/x86_64/amd64/;s/aarch64/arm64/')}"; \
+    pkg="tofu_${TOFU_VERSION}_${os}_${arch}.zip"; \
+    url="https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}"; \
+    cd /tmp; \
+    curl -sSfLO "${url}/${pkg}"; \
+    curl -sSfLO "${url}/tofu_${TOFU_VERSION}_SHA256SUMS"; \
+    grep " ${pkg}\$" "tofu_${TOFU_VERSION}_SHA256SUMS" | sha256sum -c -; \
+    unzip -o "${pkg}" tofu -d /usr/local/bin
+
+FROM ${RUNTIME_IMAGE}
+RUN apk add --no-cache ca-certificates git openssh-client \
+    && mkdir -p /workspace && chown 65532:65532 /workspace
+COPY --from=tofu /usr/local/bin/tofu /usr/local/bin/tofu
+COPY --from=builder /workspace/tofu-runner /usr/local/bin/tofu-runner
+USER 65532:65532
+WORKDIR /workspace
+ENV HOME=/workspace/home
+
+ENTRYPOINT ["/usr/local/bin/tofu-runner"]

@@ -1,0 +1,13 @@
+apiVersion: infra.labbs.fr/v1alpha1
+kind: NotificationProvider
+metadata:
+  labels:
+    app.kubernetes.io/name: tofu-tf-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: notificationprovider-sample
+spec:
+  type: webhook
+  address: https://hooks.example.com/tofu
+  # Optional Secret with keys `address` and/or `token` (sent as a Bearer token).
+  # secretRef:
+  #   name: webhook-credentials
